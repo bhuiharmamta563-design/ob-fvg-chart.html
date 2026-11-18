@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>OB और FVG चार्ट</title>
+<style>
+:root{--bg:#f6f5f1;--sf:#fff;--tx:#1f1e1b;--tx2:#5f5e5a;--bd:#d3d1c7;--up:#1D9E75;--dn:#D85A30;--ob:#534AB7;--fvg:#BA7517;--bos:#5f5e5a;--grid:#e8e6de;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#1c1b19;--sf:#262522;--tx:#f1efe8;--tx2:#b4b2a9;--bd:#444441;--ob:#AFA9EC;--fvg:#EF9F27;--bos:#b4b2a9;--grid:#32312e}}
+:root[data-theme="dark"]{--bg:#1c1b19;--sf:#262522;--tx:#f1efe8;--tx2:#b4b2a9;--bd:#444441;--ob:#AFA9EC;--fvg:#EF9F27;--bos:#b4b2a9;--grid:#32312e}
+*{box-sizing:border-box}html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--tx);font-family:system-ui,-apple-system,"Noto Sans Devanagari",sans-serif;display:flex;flex-direction:column}
+#app{flex:1;display:flex;flex-direction:column;gap:10px;padding:12px;min-height:0;background:var(--bg)}
+#app.fs{position:fixed;inset:0;z-index:9;padding:10px;padding-top:calc(10px + env(safe-area-inset-top,0px))}
+h1{font-size:18px;font-weight:500;margin:0}
+.bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.bar.sp{justify-content:space-between}
+button{font:inherit;font-size:14px;color:var(--tx);background:var(--sf);border:.5px solid var(--bd);border-radius:8px;padding:8px 12px;min-height:40px;cursor:pointer}
+button:focus-visible{outline:2px solid var(--ob);outline-offset:2px}
+button[aria-pressed="true"]{background:var(--tx);color:var(--bg);border-color:var(--tx)}
+#wrap{flex:1;min-height:260px;background:var(--sf);border:.5px solid var(--bd);border-radius:12px;overflow:hidden;position:relative}
+#s{width:100%;height:100%;display:block;touch-action:none;cursor:grab;user-select:none}
+#s.drag{cursor:grabbing}
+#hint{position:absolute;left:10px;bottom:8px;font-size:12px;color:var(--tx2);pointer-events:none}
+#info{font-size:14px;line-height:1.6;color:var(--tx2);margin:0;min-height:44px}
+#app.fs #info{min-height:0}
+text{font-family:inherit;fill:var(--tx)}
+.z{transition:opacity .2s}
+#ohlc{position:absolute;top:8px;left:8px;display:none;grid-template-columns:repeat(2,auto);gap:2px 14px;background:var(--sf);border:.5px solid var(--bd);border-radius:8px;padding:8px 10px;font-size:13px;line-height:1.5;pointer-events:none;font-variant-numeric:tabular-nums}
+#ohlc b{font-weight:500}
+#ohlc .t{grid-column:1/3;color:var(--tx2);font-size:12px}
+</style>
+</head>
+<body>
+<div id="app">
+ <div class="bar sp"><h1>OB और FVG चार्ट</h1>
+  <div class="bar"><button id="zi" aria-label="ज़ूम इन">+</button><button id="zo" aria-label="ज़ूम आउट">−</button><button id="rs">रीसेट</button><button id="fsb">फुल स्क्रीन</button></div></div>
+ <div class="bar" id="chips" role="group" aria-label="फोकस मोड">
+  <button data-f="all" aria-pressed="true">सब</button><button data-f="ob" aria-pressed="false">OB</button><button data-f="fvg" aria-pressed="false">FVG</button><button data-f="bos" aria-pressed="false">BOS</button></div>
+ <div id="wrap">
+  <svg id="s" role="img" aria-label="बुलिश OB और FVG कैंडल चार्ट">
+   <g id="grid" stroke="var(--grid)" stroke-width=".5"></g>
+   <g class="z" data-k="fvg"><rect x="90" y="104" width="184" height="58" fill="var(--fvg)" fill-opacity=".16" stroke="var(--fvg)" stroke-width=".8" stroke-dasharray="4 3"/><text x="282" y="126" font-size="13" font-weight="500" style="fill:var(--fvg)">FVG</text><text x="282" y="142" font-size="10" style="fill:var(--tx2)">गैप ज़ोन</text></g>
+   <g class="z" data-k="ob"><rect x="90" y="162" width="184" height="40" fill="var(--ob)" fill-opacity=".16" stroke="var(--ob)" stroke-width=".8" stroke-dasharray="4 3"/><text x="282" y="177" font-size="13" font-weight="500" style="fill:var(--ob)">OB</text><text x="282" y="193" font-size="10" style="fill:var(--tx2)">ऑर्डर ब्लॉक</text></g>
+   <g class="z" data-k="bos"><line x1="47" y1="112" x2="116" y2="112" stroke="var(--bos)" stroke-width="1" stroke-dasharray="4 3"/><text x="60" y="104" font-size="11" font-weight="500" style="fill:var(--bos)">BOS</text></g>
+   <g id="cs"></g>
+  </svg>
+  <div id="ohlc" aria-live="polite"></div>
+  <div id="hint">दो उंगली से ज़ूम, कैंडल पर टैप करके OHLC देखें</div>
+ </div>
+ <p id="info"></p>
+</div>
+<script>
+(function(){
+var C=[[40,120,150,112,156],[59,150,178,146,184],[78,178,166,160,184],[97,166,196,162,202],[116,196,100,96,200],[135,108,80,76,104],[154,84,60,54,88],[173,60,82,56,86],[192,82,118,80,122],[211,118,150,114,154],[230,150,176,148,180],[249,192,150,146,198],[268,150,110,104,154]];
+var NS='http://www.w3.org/2000/svg',s=document.getElementById('s'),cs=document.getElementById('cs'),gr=document.getElementById('grid'),app=document.getElementById('app'),wrap=document.getElementById('wrap'),info=document.getElementById('info');
+var T={all:'दो उंगली से ज़ूम करें, एक उंगली से खिसकाएँ। किसी ज़ोन पर फोकस करने के लिए ऊपर से चुनें।',ob:'OB (ऑर्डर ब्लॉक): तेज़ उछाल से पहले की आख़िरी लाल कैंडल। प्राइस यहाँ लौटकर अक्सर रिएक्ट करता है।',fvg:'FVG: तीन कैंडल के बीच का गैप, जहाँ प्राइस बहुत तेज़ भागा। प्राइस अक्सर इसे भरने वापस आता है।',bos:'BOS: पुराना हाई टूटना, यानी ऊपर का ट्रेंड पुख्ता हुआ। OB और FVG इसी मूव से बनते हैं।'};
+var R={all:[190,125,380],ob:[182,182,230],fvg:[182,133,230],bos:[82,112,120]};
+function el(n,a,p){var e=document.createElementNS(NS,n);for(var k in a)e.setAttribute(k,a[k]);p.appendChild(e);return e}
+for(var y=60;y<=220;y+=40)el('line',{x1:0,x2:400,y1:y,y2:y},gr);
+C.forEach(function(c,i){var up=c[2]<c[1],col=up?'var(--up)':'var(--dn)';el('line',{x1:c[0],x2:c[0],y1:c[3],y2:c[4],stroke:col,'stroke-width':1.5},cs);el('rect',{x:c[0]-5,y:Math.min(c[1],c[2]),width:10,height:Math.abs(c[1]-c[2]),fill:col},cs);el('rect',{x:c[0]-9,y:c[3]-4,width:18,height:c[4]-c[3]+8,fill:'transparent','data-i':i},cs)});var sel=el('rect',{fill:'none',stroke:'var(--tx)','stroke-width':.8,'stroke-dasharray':'2 2',visibility:'hidden',rx:2,'pointer-events':'none'},cs);
+var cx=190,cy=125,w=380,ar=1.6,cur='all',raf=0;
+function draw(){var h=w/ar;s.setAttribute('viewBox',(cx-w/2)+' '+(cy-h/2)+' '+w+' '+h)}
+function size(){var r=s.getBoundingClientRect();if(r.width&&r.height){ar=r.width/r.height;draw()}}
+function fitW(){return Math.max(380,230*ar)}
+function go(tcx,tcy,tw){cancelAnimationFrame(raf);var a=[cx,cy,w],t0=performance.now();(function st(t){var k=Math.min(1,(t-t0)/220);k=1-Math.pow(1-k,3);cx=a[0]+(tcx-a[0])*k;cy=a[1]+(tcy-a[1])*k;w=a[2]+(tw-a[2])*k;draw();if(k<1)raf=requestAnimationFrame(st)})(t0)}
+function zoomAt(f,px,py){var r=s.getBoundingClientRect(),h=w/ar,u=(px-r.left)/r.width,v=(py-r.top)/r.height,wx=cx-w/2+u*w,wy=cy-h/2+v*h,nw=Math.min(900,Math.max(40,w/f)),nh=nw/ar;cx=wx-(u-.5)*nw;cy=wy-(v-.5)*nh;w=nw;draw()}
+function zoomC(f){var r=s.getBoundingClientRect();cancelAnimationFrame(raf);zoomAt(f,r.left+r.width/2,r.top+r.height/2)}
+function reset(){set('all')}
+function set(k){cur=k;var q=document.querySelectorAll('#chips button');for(var i=0;i<q.length;i++)q[i].setAttribute('aria-pressed',q[i].dataset.f===k);var zs=document.querySelectorAll('.z');for(var j=0;j<zs.length;j++)zs[j].style.opacity=(k==='all'||zs[j].dataset.k===k)?1:.12;cs.style.opacity=k==='all'?1:.5;info.textContent=T[k];var r=R[k];go(r[0],r[1],k==='all'?fitW():r[2])}
+document.getElementById('chips').addEventListener('click',function(e){var b=e.target.closest('button');if(b)set(b.dataset.f)});
+document.getElementById('zi').onclick=function(){zoomC(1.4)};
+document.getElementById('zo').onclick=function(){zoomC(1/1.4)};
+document.getElementById('rs').onclick=reset;
+var P={},ld=0,sd=null,oh=document.getElementById('ohlc');
+function pr(y){return 5+(230-y)*0.05}
+function f2(y){return '$'+pr(y).toFixed(2)}
+function show(i){if(i<0){oh.style.display='none';sel.setAttribute('visibility','hidden');return}var c=C[i],u=c[2]<c[1],ch=(pr(c[2])-pr(c[1]))/pr(c[1])*100,col=u?'var(--up)':'var(--dn)';oh.innerHTML='<span class="t">कैंडल '+(i+1)+' (काल्पनिक भाव)</span><span>O खुला <b>'+f2(c[1])+'</b></span><span>H ऊँचा <b>'+f2(c[3])+'</b></span><span>L नीचा <b>'+f2(c[4])+'</b></span><span>C बंद <b>'+f2(c[2])+'</b></span><span class="t" style="color:'+col+'">बदलाव '+(ch>=0?'+':'')+ch.toFixed(1)+'%</span>';oh.style.display='grid';sel.setAttribute('x',c[0]-8);sel.setAttribute('y',c[3]-3);sel.setAttribute('width',16);sel.setAttribute('height',c[4]-c[3]+6);sel.setAttribute('visibility','visible')}
+function pick(t){var i=t&&t.getAttribute?t.getAttribute('data-i'):null;show(i===null?-1:+i)}
+s.addEventListener('pointerdown',function(e){sd=Object.keys(P).length===0?[e.clientX,e.clientY]:null;s.setPointerCapture(e.pointerId);P[e.pointerId]=[e.clientX,e.clientY];cancelAnimationFrame(raf);s.classList.add('drag');if(Object.keys(P).length===2)ld=pd()});
+function pd(){var k=Object.keys(P);return Math.hypot(P[k[0]][0]-P[k[1]][0],P[k[0]][1]-P[k[1]][1])}
+s.addEventListener('pointermove',function(e){if(!P[e.pointerId])return;var o=P[e.pointerId],n=Object.keys(P).length;if(n===1){var r=s.getBoundingClientRect();cx-=(e.clientX-o[0])*w/r.width;cy-=(e.clientY-o[1])*w/r.width;P[e.pointerId]=[e.clientX,e.clientY];draw()}else if(n===2){var k=Object.keys(P),a=P[k[0]],b=P[k[1]],rx=a[0]+b[0],ry=a[1]+b[1];P[e.pointerId]=[e.clientX,e.clientY];var d=pd();if(ld>0&&d>0){var m=[(P[k[0]][0]+P[k[1]][0])/2,(P[k[0]][1]+P[k[1]][1])/2];zoomAt(d/ld,m[0],m[1])}ld=d}});
+function up(e){delete P[e.pointerId];ld=0;if(!Object.keys(P).length)s.classList.remove('drag');if(sd&&e.type==='pointerup'&&Math.hypot(e.clientX-sd[0],e.clientY-sd[1])<6)pick(document.elementFromPoint(e.clientX,e.clientY));sd=null}
+s.addEventListener('pointerup',up);s.addEventListener('pointercancel',up);
+s.addEventListener('wheel',function(e){e.preventDefault();cancelAnimationFrame(raf);zoomAt(e.deltaY<0?1.15:1/1.15,e.clientX,e.clientY)},{passive:false});
+s.addEventListener('dblclick',reset);
+var fb=document.getElementById('fsb'),api=false;
+function fsSet(on){app.classList.toggle('fs',on);fb.textContent=on?'बाहर आएँ':'फुल स्क्रीन';setTimeout(function(){size();if(cur==='all'){cx=190;cy=125;w=fitW();draw()}},60)}
+fb.onclick=function(){var on=!app.classList.contains('fs');fsSet(on);try{if(on&&app.requestFullscreen){var p=app.requestFullscreen();api=true;if(p&&p.catch)p.catch(function(){api=false})}else if(!on&&document.fullscreenElement){document.exitFullscreen()}}catch(x){api=false}};
+document.addEventListener('fullscreenchange',function(){if(!document.fullscreenElement&&api&&app.classList.contains('fs')){api=false;fsSet(false)}});
+document.addEventListener('keydown',function(e){if(e.key==='Escape'&&app.classList.contains('fs')&&!document.fullscreenElement)fsSet(false)});
+if(window.ResizeObserver)new ResizeObserver(size).observe(wrap);else window.addEventListener('resize',size);
+size();info.textContent=T.all;cx=190;cy=125;w=fitW();draw();
+})();
+</script>
+</body>
+</html>
