@@ -1,3 +1,4 @@
+
 import streamlit as st
 import requests
 import pandas as pd
@@ -15,15 +16,15 @@ st.set_page_config(
 )
 
 st.title("🤖 Delta Exchange Fully Automated Trading Bot")
-st.markdown("Yeh bot Streamlit Secrets se API keys read karke live orderbook ke aadhar par automatically trades execute karega.")
+st.markdown("यह ऐप आपके Streamlit Secrets से API Keys लेकर सभी लाइव कॉइन्स (जैसे UNIUSD, AVAXUSD, BTCUSDT आदि) के लाइव ऑर्डरबुक और ऑटो-सिग्नल के आधार पर ट्रेड करता है।")
 
 # 1. Load API Keys securely from Streamlit Secrets
 try:
     API_KEY = st.secrets["DELTA_API_KEY"]
     API_SECRET = st.secrets["DELTA_API_SECRET"]
-    st.sidebar.success("✅ API Keys loaded successfully from Secrets!")
+    st.sidebar.success("✅ API Keys loaded from Secrets!")
 except Exception as e:
-    st.sidebar.error("❌ API Keys not found in Streamlit Secrets! Please configure secrets.toml")
+    st.sidebar.error("❌ Streamlit Secrets में DELTA_API_KEY या DELTA_API_SECRET नहीं मिले!")
     API_KEY = ""
     API_SECRET = ""
 
@@ -34,15 +35,30 @@ if "Testnet" in mode:
 else:
     BASE_URL = "https://api.delta.exchange"
 
-symbol = st.sidebar.selectbox("Select Asset", ["BTC-PERP", "ETH-PERP"])
+# Function to fetch all available symbols dynamically from Delta Exchange
+@st.cache_data(ttl=300)
+def get_all_delta_symbols(base_url):
+    try:
+        resp = requests.get(f"{base_url}/v2/products", timeout=5).json()
+        if "result" in resp:
+            symbols = [
+                p["symbol"] for p in resp["result"] 
+                if p.get("state") == "live" and p.get("contract_type") in ["perpetual_futures", "futures", "spot"]
+            ]
+            return sorted(symbols)
+    except Exception:
+        pass
+    return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "AVAXUSDT", "UNIUSDT", "BTC-PERP"]
+
+all_symbols = get_all_delta_symbols(BASE_URL)
+symbol = st.sidebar.selectbox("Select Asset (Search any coin)", all_symbols, index=0 if all_symbols else 0)
 order_size = st.sidebar.number_input("Order Size (Contracts)", min_value=1, value=1)
 
 # Master Switch for Auto-Trading
-auto_trade_enabled = st.sidebar.checkbox("🚀 Enable Live Auto-Trading (Automatic Execution)", value=False)
+auto_trade_enabled = st.sidebar.checkbox("🚀 Enable Live Auto-Trading", value=False)
 
-# Helper function to sign Delta Exchange API requests (Authentication)
+# Helper function to sign Delta Exchange API requests
 def generate_signature(method, endpoint, payload_string=''):
-    import time
     timestamp = str(int(time.time()))
     signature_data = timestamp + method + endpoint + payload_string
     signature = hmac.new(
@@ -55,7 +71,7 @@ def generate_signature(method, endpoint, payload_string=''):
 # Function to place order on Delta Exchange
 def place_delta_order(product_id, side, size):
     if not API_KEY or not API_SECRET:
-        st.error("API Keys missing! Cannot place order.")
+        st.error("API Keys missing!")
         return False
     
     endpoint = "/v2/orders"
@@ -64,11 +80,10 @@ def place_delta_order(product_id, side, size):
     payload = {
         "product_id": product_id,
         "size": size,
-        "side": side,  # "buy" or "sell"
+        "side": side,
         "order_type": "market"
     }
     payload_str = json.dumps(payload)
-    
     timestamp, signature = generate_signature("POST", endpoint, payload_str)
     
     headers = {
@@ -91,23 +106,33 @@ def place_delta_order(product_id, side, size):
         st.error(f"API Request Exception: {str(e)}")
         return False
 
-# Fetch product ID and orderbook
+# Fetch product ID and orderbook with flexible matching
 @st.cache_data(ttl=5)
-def fetch_delta_data(symbol_name):
+def fetch_delta_data(symbol_name, base_url):
     try:
-        products_url = f"{BASE_URL}/v2/products"
+        products_url = f"{base_url}/v2/products"
         resp = requests.get(products_url, timeout=5).json()
         product_id = None
+        
+        target = symbol_name.replace("-", "").replace("_", "").upper()
         if "result" in resp:
             for p in resp["result"]:
-                if p["symbol"] == symbol_name:
+                p_sym = p.get("symbol", "").replace("-", "").replace("_", "").upper()
+                if target == p_sym:
                     product_id = p["id"]
                     break
+            # Fallback substring match if exact match not found
+            if not product_id:
+                for p in resp["result"]:
+                    p_sym = p.get("symbol", "").replace("-", "").replace("_", "").upper()
+                    if target in p_sym or p_sym in target:
+                        product_id = p["id"]
+                        break
         
         if not product_id:
-            return None, None, None, "Product ID not found"
+            return None, None, None, f"Product ID not found for {symbol_name}"
 
-        book_url = f"{BASE_URL}/v2/products/{product_id}/orderbook"
+        book_url = f"{base_url}/v2/products/{product_id}/orderbook"
         book_resp = requests.get(book_url, timeout=5).json()
         
         if "result" in book_resp:
@@ -126,7 +151,6 @@ with col1:
     st.subheader(f"📊 Live Market View ({symbol})")
     price_placeholder = st.empty()
     
-    # Static/Live chart layout placeholder
     fig = go.Figure(data=[go.Candlestick(
         x=['10:00', '10:05', '10:10', '10:15'],
         open=[67100, 67200, 67450, 67350],
@@ -138,13 +162,13 @@ with col1:
     st.plotly_chart(fig, use_container_width=True)
 
 with col2:
-    st.subheader("⚡ Bot Signals & Execution Status")
+    st.subheader("⚡ Bot Signals & Execution")
     signal_box = st.empty()
     execution_log = st.empty()
     orderbook_container = st.container()
 
 # Fetch data and evaluate signals
-product_id, bids, asks, error = fetch_delta_data(symbol)
+product_id, bids, asks, error = fetch_delta_data(symbol, BASE_URL)
 
 if error:
     st.error(f"Error: {error}")
@@ -181,9 +205,8 @@ else:
             else:
                 execution_log.info("💤 Bot waiting for strong signal...")
         else:
-            execution_log.info("ℹ️ Auto-Trading is OFF. Turn it on from sidebar to trade automatically.")
+            execution_log.info("ℹ️ Auto-Trading is OFF. Turn it on from sidebar.")
 
-# Auto-refresh loop to keep checking signals every few seconds
 if st.button("🔄 Refresh Data / Run Cycle"):
-    st.rerilled = True
-        
+    st.rerun()
+    
