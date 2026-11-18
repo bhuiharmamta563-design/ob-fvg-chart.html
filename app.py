@@ -1,227 +1,309 @@
-import streamlit as st
-import requests
+import time
+
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-import time
-import hmac
-import hashlib
-import json
+import requests
+import streamlit as st
 
-# Page Configuration
+# ------------------------------------------------------------------
+# Delta Exchange India: ऑर्डर बुक ज़ोन + सिग्नल + चार्ट
+# ------------------------------------------------------------------
+BASE = "https://api.india.delta.exchange"
+COINS = ["UNIUSD", "AVAXUSD", "BTCUSD"]
+TF = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600}
+
 st.set_page_config(
-    page_title="Delta Exchange Auto-Trading Bot",
-    page_icon="🤖",
-    layout="wide"
+    page_title="Delta ऑर्डर बुक ज़ोन",
+    layout="wide",
+    initial_sidebar_state="collapsed",
 )
 
-st.title("🤖 Delta Exchange Fully Automated Trading Bot")
-st.markdown("यह ऐप आपके Streamlit Secrets से API Keys लेकर सभी लाइव कॉइन्स के लाइव ऑर्डरबुक और ऑटो-सिग्नल के आधार पर ट्रेड करता है।")
 
-# 1. Load API Keys securely from Streamlit Secrets
-try:
-    API_KEY = st.secrets["DELTA_API_KEY"]
-    API_SECRET = st.secrets["DELTA_API_SECRET"]
-    st.sidebar.success("✅ API Keys loaded from Secrets!")
-except Exception as e:
-    st.sidebar.error("❌ Streamlit Secrets में API Keys नहीं मिलीं!")
-    API_KEY = ""
-    API_SECRET = ""
+def fmt(x):
+    return f"{x:,.4f}" if x < 100 else f"{x:,.2f}"
 
-# Sidebar Configuration
-mode = st.sidebar.selectbox("Trading Mode", ["Testnet (Recommended)", "Live Exchange"])
-if "Testnet" in mode:
-    BASE_URL = "https://testnet-api.delta.exchange"
-else:
-    BASE_URL = "https://api.delta.exchange"
 
-# Function to fetch all available symbols dynamically
-@st.cache_data(ttl=300)
-def get_all_delta_symbols(base_url):
+# ---------------------------- डेटा --------------------------------
+@st.cache_data(ttl=10)
+def get_candles(symbol, res, n):
+    end = int(time.time())
+    start = end - TF[res] * n
+    r = requests.get(
+        f"{BASE}/v2/history/candles",
+        params={"symbol": symbol, "resolution": res, "start": start, "end": end},
+        timeout=10,
+    )
+    r.raise_for_status()
+    df = pd.DataFrame(r.json().get("result", []))
+    if df.empty:
+        return df
+    df["time"] = pd.to_datetime(df["time"], unit="s", utc=True).dt.tz_convert("Asia/Kolkata")
+    for c in ["open", "high", "low", "close", "volume"]:
+        df[c] = df[c].astype(float)
+    return df.sort_values("time").reset_index(drop=True)
+
+
+def get_book(symbol, depth=100):
+    r = requests.get(f"{BASE}/v2/l2orderbook/{symbol}", params={"depth": depth}, timeout=10)
+    r.raise_for_status()
+    res = r.json()["result"]
+
+    def to_df(rows):
+        d = pd.DataFrame(rows)
+        if d.empty:
+            return pd.DataFrame(columns=["price", "size", "notional"])
+        d["price"] = d["price"].astype(float)
+        d["size"] = d["size"].astype(float)
+        d["notional"] = d["price"] * d["size"]
+        return d
+
+    return to_df(res.get("buy", [])), to_df(res.get("sell", []))
+
+
+# ---------------------------- ज़ोन --------------------------------
+def find_zones(df, mid, bucket_pct, top_n, min_strength, side):
+    if df.empty:
+        return []
+    step = mid * bucket_pct / 100
+    d = df.copy()
+    d["b"] = np.floor(d["price"] / step).astype(int)
+    g = d.groupby("b")["notional"].sum().reset_index()
+    avg = g["notional"].mean()
+    if not avg or np.isnan(avg):
+        return []
+    g["strength"] = g["notional"] / avg
+    g = g[g["strength"] >= min_strength].sort_values("notional", ascending=False).head(top_n)
+    return [
+        {
+            "side": side,
+            "low": float(r.b * step),
+            "high": float((r.b + 1) * step),
+            "notional": float(r.notional),
+            "strength": float(r.strength),
+        }
+        for r in g.itertuples()
+    ]
+
+
+def imbalance(bids, asks, mid, band_pct):
+    lo, hi = mid * (1 - band_pct / 100), mid * (1 + band_pct / 100)
+    b = bids.loc[bids["price"] >= lo, "notional"].sum()
+    a = asks.loc[asks["price"] <= hi, "notional"].sum()
+    tot = b + a
+    return (b / tot) if tot else 0.5
+
+
+# ---------------------------- सिग्नल -------------------------------
+def make_signal(price, buy_z, sell_z, imb, near_pct):
+    sup = [z for z in buy_z if z["low"] <= price]
+    res = [z for z in sell_z if z["high"] >= price]
+    sup = max(sup, key=lambda z: z["high"]) if sup else None
+    res = min(res, key=lambda z: z["low"]) if res else None
+
+    if sup and imb >= 0.55:
+        dist = max(0.0, (price - sup["high"]) / price * 100)
+        if dist <= near_pct:
+            sl = sup["low"] * 0.999
+            tp = res["low"] if res else price + 2 * (price - sl)
+            return {"type": "BUY", "entry": price, "sl": sl, "tp": tp, "zone": sup}
+    if res and imb <= 0.45:
+        dist = max(0.0, (res["low"] - price) / price * 100)
+        if dist <= near_pct:
+            sl = res["high"] * 1.001
+            tp = sup["high"] if sup else price - 2 * (sl - price)
+            return {"type": "SELL", "entry": price, "sl": sl, "tp": tp, "zone": res}
+    return {"type": "WAIT"}
+
+
+def check_breaks(price, prev_price, prev_zones):
+    out = []
+    if prev_price is None:
+        return out
+    for z in prev_zones:
+        rng = f"{fmt(z['low'])} – {fmt(z['high'])}"
+        if z["side"] == "buy" and prev_price >= z["low"] and price < z["low"]:
+            out.append(f"🔻 सपोर्ट ज़ोन टूटा ({rng}), ताक़त {z['strength']:.1f}x")
+        if z["side"] == "sell" and prev_price <= z["high"] and price > z["high"]:
+            out.append(f"🔺 रेज़िस्टेंस ज़ोन टूटा ({rng}), ताक़त {z['strength']:.1f}x")
+    return out
+
+
+# ---------------------------- चार्ट --------------------------------
+def build_chart(df, zones, sig, height):
+    fig = go.Figure(
+        go.Candlestick(
+            x=df["time"],
+            open=df["open"],
+            high=df["high"],
+            low=df["low"],
+            close=df["close"],
+            increasing_line_color="#26a69a",
+            decreasing_line_color="#ef5350",
+            name="",
+        )
+    )
+    step = df["time"].iloc[-1] - df["time"].iloc[-2] if len(df) > 1 else pd.Timedelta(minutes=1)
+    x0, x1 = df["time"].iloc[0], df["time"].iloc[-1] + step * 10
+
+    for z in zones:
+        alpha = min(0.15 + 0.05 * z["strength"], 0.5)
+        color = f"rgba(0,200,120,{alpha})" if z["side"] == "buy" else f"rgba(240,70,70,{alpha})"
+        fig.add_shape(
+            type="rect", x0=x0, x1=x1, y0=z["low"], y1=z["high"],
+            fillcolor=color, line_width=0, layer="below",
+        )
+        fig.add_annotation(
+            x=x1, y=(z["low"] + z["high"]) / 2, xanchor="right", showarrow=False,
+            text=("सपोर्ट " if z["side"] == "buy" else "रेज़िस्टेंस ") + f"{z['strength']:.1f}x",
+            font=dict(size=11, color="white"),
+        )
+
+    if sig["type"] != "WAIT":
+        for name, val, col in [("एंट्री", sig["entry"], "#ffd54f"),
+                               ("SL", sig["sl"], "#ff5252"),
+                               ("TP", sig["tp"], "#69f0ae")]:
+            fig.add_hline(y=val, line_dash="dot", line_color=col, line_width=1,
+                          annotation_text=name, annotation_position="left")
+
+    lo, hi = df["low"].min(), df["high"].max()
+    pad = (hi - lo) * 0.08
+    fig.update_layout(
+        template="plotly_dark",
+        height=height,
+        margin=dict(l=0, r=0, t=10, b=0),
+        dragmode="pan",              # एक उँगली = खिसकाना, दो उँगली = ज़ूम
+        xaxis_rangeslider_visible=False,
+        yaxis=dict(side="right", range=[lo - pad, hi + pad]),
+        showlegend=False,
+        uirevision="keep",           # रिफ्रेश पर आपका ज़ूम बना रहे
+    )
+    return fig
+
+
+CHART_CONFIG = {
+    "scrollZoom": True,              # माउस स्क्रॉल / दो उँगली पिंच ज़ूम
+    "displaylogo": False,
+    "displayModeBar": True,
+    "doubleClick": "reset",
+    "modeBarButtonsToAdd": ["drawline", "drawrect", "eraseshape"],
+}
+
+
+def show_chart(fig):
     try:
-        resp = requests.get(f"{base_url}/v2/products", timeout=5)
-        if resp.status_code == 200:
-            resp_json = resp.json()
-            if "result" in resp_json:
-                symbols = [
-                    p["symbol"] for p in resp_json["result"] 
-                    if p.get("state") == "live" and p.get("contract_type") in ["perpetual_futures", "futures", "spot"]
-                ]
-                return sorted(symbols)
-    except Exception:
-        pass
-    return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "AVAXUSDT", "UNIUSDT", "BTC-PERP", "DOGEUSDT"]
+        st.plotly_chart(fig, width="stretch", config=CHART_CONFIG)
+    except TypeError:
+        st.plotly_chart(fig, use_container_width=True, config=CHART_CONFIG)
 
-all_symbols = get_all_delta_symbols(BASE_URL)
-symbol = st.sidebar.selectbox("Select Asset (Search any coin)", all_symbols, index=0 if all_symbols else 0)
-order_size = st.sidebar.number_input("Order Size (Contracts)", min_value=1, value=1)
 
-# Master Switch for Auto-Trading
-auto_trade_enabled = st.sidebar.checkbox("🚀 Enable Live Auto-Trading", value=False)
+# ---------------------------- UI ----------------------------------
+st.markdown(
+    "<style>.block-container{padding-top:1rem;padding-bottom:0.5rem;}</style>",
+    unsafe_allow_html=True,
+)
 
-# Helper function to sign Delta Exchange API requests
-def generate_signature(method, endpoint, payload_string=''):
-    timestamp = str(int(time.time()))
-    signature_data = timestamp + method + endpoint + payload_string
-    signature = hmac.new(
-        API_SECRET.encode('utf-8'),
-        signature_data.encode('utf-8'),
-        hashlib.sha256
-    ).hexdigest()
-    return timestamp, signature
+c1, c2, c3 = st.columns([2, 2, 2])
+symbol = c1.selectbox("कॉइन", COINS, label_visibility="collapsed")
+tf = c2.selectbox("टाइमफ्रेम", list(TF), index=1, label_visibility="collapsed")
+focus = c3.toggle("🎯 फ़ोकस मोड", value=False)
 
-# Function to place order on Delta Exchange
-def place_delta_order(product_id, side, size):
-    if not API_KEY or not API_SECRET:
-        st.error("API Keys missing!")
-        return False
-    
-    endpoint = "/v2/orders"
-    url = BASE_URL + endpoint
-    
-    payload = {
-        "product_id": product_id,
-        "size": size,
-        "side": side,
-        "order_type": "market"
-    }
-    payload_str = json.dumps(payload)
-    timestamp, signature = generate_signature("POST", endpoint, payload_str)
-    
-    headers = {
-        "api-key": API_KEY,
-        "timestamp": timestamp,
-        "signature": signature,
-        "Content-Type": "application/json"
-    }
-    
+if focus:
+    st.markdown(
+        "<style>header[data-testid='stHeader']{display:none;}"
+        ".block-container{padding-top:0.3rem;}</style>",
+        unsafe_allow_html=True,
+    )
+
+with st.sidebar:
+    st.header("सेटिंग")
+    bucket_pct = st.slider("ज़ोन की चौड़ाई (%)", 0.05, 1.0, 0.20, 0.05)
+    top_n = st.slider("हर तरफ़ कितने ज़ोन", 1, 6, 3)
+    min_strength = st.slider("न्यूनतम ताक़त (x)", 1.0, 5.0, 1.5, 0.1)
+    band_pct = st.slider("इम्बैलेंस दायरा (± %)", 0.2, 3.0, 1.0, 0.1)
+    near_pct = st.slider("सिग्नल के लिए ज़ोन से दूरी (%)", 0.1, 1.5, 0.4, 0.1)
+    n_candles = st.slider("कैंडल की संख्या", 50, 300, 150, 10)
+    refresh = st.slider("ऑटो-रिफ्रेश (सेकंड, 0 = बंद)", 0, 30, 5)
+
+if not focus:
+    st.title(f"📊 {symbol} ऑर्डर बुक ज़ोन")
+
+for key, default in [("prev_zones", []), ("prev_price", None), ("alerts", [])]:
+    if key not in st.session_state:
+        st.session_state[key] = default
+
+
+def render():
     try:
-        response = requests.post(url, headers=headers, data=payload_str, timeout=5)
-        if response.status_code == 200:
-            res_json = response.json()
-            if res_json.get("success"):
-                st.success(f"🎉 Order Executed! Side: {side.upper()} | Size: {size}")
-                return True
-            else:
-                st.error(f"Order Failed: {res_json.get('error', 'Unknown error')}")
-        else:
-            st.error(f"API Error Code: {response.status_code}")
-        return False
+        df = get_candles(symbol, tf, n_candles)
+        bids, asks = get_book(symbol)
     except Exception as e:
-        st.error(f"API Request Exception: {str(e)}")
-        return False
+        st.error(f"डेटा नहीं आया: {e}")
+        return
+    if df.empty or bids.empty or asks.empty:
+        st.warning("इस कॉइन का डेटा अभी खाली है।")
+        return
 
-# Fetch product ID and orderbook safely
-@st.cache_data(ttl=5)
-def fetch_delta_data(symbol_name, base_url):
-    try:
-        products_url = f"{base_url}/v2/products"
-        resp = requests.get(products_url, timeout=5)
-        if resp.status_code != 200:
-            return None, None, None, f"Products API error (Status {resp.status_code})"
-        
-        resp_json = resp.json()
-        product_id = None
-        
-        target = symbol_name.replace("-", "").replace("_", "").upper()
-        if "result" in resp_json:
-            for p in resp_json["result"]:
-                p_sym = p.get("symbol", "").replace("-", "").replace("_", "").upper()
-                if target == p_sym:
-                    product_id = p["id"]
-                    break
-            if not product_id:
-                for p in resp_json["result"]:
-                    p_sym = p.get("symbol", "").replace("-", "").replace("_", "").upper()
-                    if target in p_sym or p_sym in target:
-                        product_id = p["id"]
-                        break
-        
-        if not product_id:
-            return None, None, None, f"Product ID not found for {symbol_name}"
+    mid = (bids["price"].max() + asks["price"].min()) / 2
+    zones = (
+        find_zones(bids, mid, bucket_pct, top_n, min_strength, "buy")
+        + find_zones(asks, mid, bucket_pct, top_n, min_strength, "sell")
+    )
+    buy_z = [z for z in zones if z["side"] == "buy"]
+    sell_z = [z for z in zones if z["side"] == "sell"]
+    imb = imbalance(bids, asks, mid, band_pct)
+    sig = make_signal(mid, buy_z, sell_z, imb, near_pct)
 
-        book_url = f"{base_url}/v2/products/{product_id}/orderbook"
-        book_resp = requests.get(book_url, timeout=5)
-        if book_resp.status_code != 200:
-            return product_id, None, None, "Failed to fetch orderbook data"
-            
-        book_json = book_resp.json()
-        if "result" in book_json:
-            bids = book_json["result"].get("bids", [])
-            asks = book_json["result"].get("asks", [])
-            return product_id, bids, asks, None
-        else:
-            return product_id, None, None, "Invalid orderbook structure"
-    except Exception as e:
-        return None, None, None, str(e)
+    # ज़ोन टूटने का अलर्ट
+    stamp = pd.Timestamp.now(tz="Asia/Kolkata").strftime("%H:%M:%S")
+    new_alerts = check_breaks(mid, st.session_state["prev_price"], st.session_state["prev_zones"])
+    for a in new_alerts:
+        st.toast(a)
+        st.session_state["alerts"].insert(0, f"{stamp}  {a}")
+    st.session_state["alerts"] = st.session_state["alerts"][:20]
+    st.session_state["prev_price"] = mid
+    st.session_state["prev_zones"] = zones
 
-# --- VERTICAL / STACKED LAYOUT (MOBILE FRIENDLY) ---
+    # सिग्नल की एक लाइन
+    if sig["type"] == "BUY":
+        st.success(
+            f"🟢 BUY  |  एंट्री {fmt(sig['entry'])}  |  SL {fmt(sig['sl'])}  |  TP {fmt(sig['tp'])}"
+        )
+    elif sig["type"] == "SELL":
+        st.error(
+            f"🔴 SELL  |  एंट्री {fmt(sig['entry'])}  |  SL {fmt(sig['sl'])}  |  TP {fmt(sig['tp'])}"
+        )
+    else:
+        st.info(f"⚪ अभी रुकें (WAIT)  |  भाव {fmt(mid)}")
+    for a in new_alerts:
+        st.warning(a)
 
-# 1. Live Market View Section (Top)
-st.subheader(f"📊 Live Market View ({symbol})")
-price_placeholder = st.empty()
+    fig = build_chart(df, zones, sig, height=780 if focus else 600)
+    show_chart(fig)
 
-fig = go.Figure(data=[go.Candlestick(
-    x=['10:00', '10:05', '10:10', '10:15'],
-    open=[67100, 67200, 67450, 67350],
-    high=[67350, 67500, 67600, 67400],
-    low=[66950, 67150, 67300, 67000],
-    close=[67200, 67450, 67350, 67050]
-)])
-fig.update_layout(template="plotly_dark", margin=dict(l=10, r=10, t=10, b=10), height=350)
-st.plotly_chart(fig, use_container_width=True)
+    if not focus:
+        st.caption(f"खरीदार {imb*100:.0f}%  vs  बेचने वाले {(1-imb)*100:.0f}%  (भाव के ±{band_pct}% के अंदर)")
+        st.progress(float(imb))
 
-st.markdown("---")
-
-# 2. Bot Signals & Execution Section (Now Below Chart)
-st.subheader("⚡ Bot Signals & Execution Status")
-signal_box = st.empty()
-execution_log = st.empty()
-
-# Fetch data and evaluate signals
-product_id, bids, asks, error = fetch_delta_data(symbol, BASE_URL)
-
-if error:
-    st.error(f"Error: {error}")
-else:
-    if bids and asks:
-        total_bid_qty = sum([float(b[1]) for b in bids[:5]])
-        total_ask_qty = sum([float(a[1]) for a in asks[:5]])
-        
-        current_signal = "NEUTRAL"
-        if total_bid_qty > total_ask_qty * 1.2:
-            signal_box.success("🟢 SIGNAL: STRONG BUY (Support Wall Active)")
-            current_signal = "BUY"
-        elif total_ask_qty > total_bid_qty * 1.2:
-            signal_box.error("🔴 SIGNAL: STRONG SELL (Resistance Wall Active)")
-            current_signal = "SELL"
-        else:
-            signal_box.info("⚪ NEUTRAL: Market Consolidating")
-
-        price_placeholder.metric("Best Bid Price", f"₹ {bids[0][0]}")
-
-        # --- AUTO-TRADING EXECUTION LOGIC ---
-        if auto_trade_enabled and product_id:
-            if current_signal == "BUY":
-                execution_log.warning("⚡ Auto-Bot triggered: Placing BUY Order...")
-                place_delta_order(product_id, "buy", order_size)
-            elif current_signal == "SELL":
-                execution_log.warning("⚡ Auto-Bot triggered: Placing SELL Order...")
-                place_delta_order(product_id, "sell", order_size)
+        rows = [
+            {
+                "तरफ़": "सपोर्ट" if z["side"] == "buy" else "रेज़िस्टेंस",
+                "से": fmt(z["low"]),
+                "तक": fmt(z["high"]),
+                "ताक़त (x)": round(z["strength"], 1),
+                "ऑर्डर वैल्यू (USD)": f"{z['notional']:,.0f}",
+            }
+            for z in sorted(zones, key=lambda z: -z["high"])
+        ]
+        if rows:
+            st.dataframe(pd.DataFrame(rows), hide_index=True)
+        with st.expander("🔔 ज़ोन टूटने के अलर्ट (आज का लॉग)"):
+            if st.session_state["alerts"]:
+                for a in st.session_state["alerts"]:
+                    st.write(a)
             else:
-                execution_log.info("💤 Bot waiting for strong signal...")
-        else:
-            execution_log.info("ℹ️ Auto-Trading is OFF. Turn it on from sidebar to trade automatically.")
+                st.write("अभी कोई ज़ोन नहीं टूटा।")
+        st.caption(f"आख़िरी अपडेट: {stamp}  •  यह सिर्फ़ सहायक संकेत है, ट्रेड का फ़ैसला आपका।")
 
-        # 3. Orderbook Tables (Below Signals)
-        st.markdown("### 📚 Orderbook Walls")
-        col_ask, col_bid = st.columns(2)
-        with col_ask:
-            st.markdown("**Top Asks (Resistance)**")
-            st.dataframe(pd.DataFrame(asks[:5], columns=["Price", "Size"]), use_container_width=True, hide_index=True)
-        with col_bid:
-            st.markdown("**Top Bids (Support)**")
-            st.dataframe(pd.DataFrame(bids[:5], columns=["Price", "Size"]), use_container_width=True, hide_index=True)
 
-if st.button("🔄 Refresh Data / Run Cycle"):
-    st.rerun()
-    
+st.fragment(render, run_every=refresh if refresh > 0 else None)()
