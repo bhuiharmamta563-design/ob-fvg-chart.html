@@ -9,6 +9,7 @@
     <!-- Lightweight Charts -->
     <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
     <style>
+        /* Focus / Fullscreen Mode Styles */
         .fullscreen-mode {
             position: fixed !important;
             top: 0 !important;
@@ -16,8 +17,14 @@
             width: 100vw !important;
             height: 100vh !important;
             z-index: 9999 !important;
-            background: #121212 !important;
-            padding: 10px;
+            background: #0f172a !important;
+            padding: 15px !important;
+            display: flex;
+            flex-direction: column;
+        }
+        .fullscreen-mode #chart-container {
+            flex-grow: 1 !important;
+            height: auto !important;
         }
         body {
             background-color: #0f172a;
@@ -43,8 +50,9 @@
                     <option value="BTCUSDT">BTC-PERP</option>
                     <option value="ETHUSDT">ETH-PERP</option>
                 </select>
-                <button id="fullscreen-btn" onclick="toggleFullscreen()" class="bg-slate-700 hover:bg-slate-600 text-xs px-3 py-2 rounded-lg font-medium transition">
-                    ⛶ Fullscreen / Focus
+                <!-- Fullscreen / Focus Toggle Button -->
+                <button id="fullscreen-btn" onclick="toggleFullscreen()" class="bg-emerald-600 hover:bg-emerald-500 text-xs px-3 py-2 rounded-lg font-bold text-white transition">
+                    ⛶ Focus / Fullscreen
                 </button>
             </div>
         </header>
@@ -58,7 +66,7 @@
                     <span class="text-sm font-semibold text-slate-300">Live Chart & Signal Markers</span>
                     <span id="live-price" class="text-sm font-bold text-emerald-400 animate-pulse">Loading...</span>
                 </div>
-                <!-- Chart Container with Pinch-to-Zoom -->
+                <!-- Chart Container with Touch Pinch-to-Zoom Enabled -->
                 <div id="chart-container" class="w-full flex-grow touch-none relative rounded-lg overflow-hidden"></div>
             </div>
 
@@ -94,7 +102,7 @@
 
     <!-- JavaScript Application Logic -->
     <script>
-        // 1. Initialize Chart
+        // 1. Initialize Chart with Pinch-to-Zoom enabled for mobile
         const chartContainer = document.getElementById('chart-container');
         const chart = LightweightCharts.createChart(chartContainer, {
             layout: {
@@ -105,14 +113,29 @@
                 vertLines: { color: '#1e293b' },
                 horzLines: { color: '#1e293b' },
             },
-            timeScale: { timeVisible: true, secondsVisible: false },
-            handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
-            handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+            timeScale: { 
+                timeVisible: true, 
+                secondsVisible: false 
+            },
+            handleScroll: { 
+                mouseWheel: true, 
+                pressedMouseMove: true, 
+                horzTouchDrag: true, 
+                vertTouchDrag: true 
+            },
+            handleScale: { 
+                axisPressedMouseMove: true, 
+                mouseWheel: true, 
+                pinch: true // Yeh mobile par do ungliyon se zoom in/out karne ke liye hai
+            },
         });
 
         const candlestickSeries = chart.addCandlestickSeries({
-            upColor: '#10b981', downColor: '#f43f5e', borderVisible: false,
-            wickUpColor: '#10b981', wickDownColor: '#f43f5e',
+            upColor: '#10b981', 
+            downColor: '#f43f5e', 
+            borderVisible: false,
+            wickUpColor: '#10b981', 
+            wickDownColor: '#f43f5e',
         });
 
         // Base Chart Data
@@ -125,19 +148,30 @@
         ];
         candlestickSeries.setData(chartData);
 
+        // Auto resize chart on window change
         window.addEventListener('resize', () => {
             chart.applyOptions({ width: chartContainer.clientWidth, height: chartContainer.clientHeight });
         });
 
+        // 2. Fullscreen / Focus Mode Toggle Functionality
         function toggleFullscreen() {
             const card = document.getElementById('chart-card');
+            const btn = document.getElementById('fullscreen-btn');
             card.classList.toggle('fullscreen-mode');
+            
+            if (card.classList.contains('fullscreen-mode')) {
+                btn.innerText = "✕ Exit Focus";
+            } else {
+                btn.innerText = "⛶ Focus / Fullscreen";
+            }
+
+            // Resize chart properly after layout shift
             setTimeout(() => {
                 chart.applyOptions({ width: chartContainer.clientWidth, height: chartContainer.clientHeight });
             }, 100);
         }
 
-        // 2. Orderbook & Automatic Signal Logic
+        // 3. Orderbook & Automatic Signal Logic
         function updateOrderbookAndSignals() {
             const list = document.getElementById('orderbook-list');
             const badge = document.getElementById('signal-badge');
