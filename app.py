@@ -1,4 +1,3 @@
-
 import streamlit as st
 import requests
 import pandas as pd
@@ -16,7 +15,7 @@ st.set_page_config(
 )
 
 st.title("🤖 Delta Exchange Fully Automated Trading Bot")
-st.markdown("यह ऐप आपके Streamlit Secrets से API Keys लेकर सभी लाइव कॉइन्स (जैसे UNIUSD, AVAXUSD, BTCUSDT आदि) के लाइव ऑर्डरबुक और ऑटो-सिग्नल के आधार पर ट्रेड करता है।")
+st.markdown("यह ऐप आपके Streamlit Secrets से API Keys लेकर सभी लाइव कॉइन्स के लाइव ऑर्डरबुक और ऑटो-सिग्नल के आधार पर ट्रेड करता है।")
 
 # 1. Load API Keys securely from Streamlit Secrets
 try:
@@ -24,7 +23,7 @@ try:
     API_SECRET = st.secrets["DELTA_API_SECRET"]
     st.sidebar.success("✅ API Keys loaded from Secrets!")
 except Exception as e:
-    st.sidebar.error("❌ Streamlit Secrets में DELTA_API_KEY या DELTA_API_SECRET नहीं मिले!")
+    st.sidebar.error("❌ Streamlit Secrets में API Keys नहीं मिलीं!")
     API_KEY = ""
     API_SECRET = ""
 
@@ -35,20 +34,22 @@ if "Testnet" in mode:
 else:
     BASE_URL = "https://api.delta.exchange"
 
-# Function to fetch all available symbols dynamically from Delta Exchange
+# Function to fetch all available symbols dynamically
 @st.cache_data(ttl=300)
 def get_all_delta_symbols(base_url):
     try:
-        resp = requests.get(f"{base_url}/v2/products", timeout=5).json()
-        if "result" in resp:
-            symbols = [
-                p["symbol"] for p in resp["result"] 
-                if p.get("state") == "live" and p.get("contract_type") in ["perpetual_futures", "futures", "spot"]
-            ]
-            return sorted(symbols)
+        resp = requests.get(f"{base_url}/v2/products", timeout=5)
+        if resp.status_code == 200:
+            resp_json = resp.json()
+            if "result" in resp_json:
+                symbols = [
+                    p["symbol"] for p in resp_json["result"] 
+                    if p.get("state") == "live" and p.get("contract_type") in ["perpetual_futures", "futures", "spot"]
+                ]
+                return sorted(symbols)
     except Exception:
         pass
-    return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "AVAXUSDT", "UNIUSDT", "BTC-PERP"]
+    return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "AVAXUSDT", "UNIUSDT", "BTC-PERP", "DOGEUSDT"]
 
 all_symbols = get_all_delta_symbols(BASE_URL)
 symbol = st.sidebar.selectbox("Select Asset (Search any coin)", all_symbols, index=0 if all_symbols else 0)
@@ -95,35 +96,41 @@ def place_delta_order(product_id, side, size):
     
     try:
         response = requests.post(url, headers=headers, data=payload_str, timeout=5)
-        res_json = response.json()
-        if response.status_code == 200 and res_json.get("success"):
-            st.success(f"🎉 Order Executed Successfully! Side: {side.upper()} | Size: {size}")
-            return True
+        if response.status_code == 200:
+            res_json = response.json()
+            if res_json.get("success"):
+                st.success(f"🎉 Order Executed! Side: {side.upper()} | Size: {size}")
+                return True
+            else:
+                st.error(f"Order Failed: {res_json.get('error', 'Unknown error')}")
         else:
-            st.error(f"Order Failed: {res_json.get('error', 'Unknown error')}")
-            return False
+            st.error(f"API Error Code: {response.status_code}")
+        return False
     except Exception as e:
         st.error(f"API Request Exception: {str(e)}")
         return False
 
-# Fetch product ID and orderbook with flexible matching
+# Fetch product ID and orderbook safely
 @st.cache_data(ttl=5)
 def fetch_delta_data(symbol_name, base_url):
     try:
         products_url = f"{base_url}/v2/products"
-        resp = requests.get(products_url, timeout=5).json()
+        resp = requests.get(products_url, timeout=5)
+        if resp.status_code != 200:
+            return None, None, None, f"Products API error (Status {resp.status_code})"
+        
+        resp_json = resp.json()
         product_id = None
         
         target = symbol_name.replace("-", "").replace("_", "").upper()
-        if "result" in resp:
-            for p in resp["result"]:
+        if "result" in resp_json:
+            for p in resp_json["result"]:
                 p_sym = p.get("symbol", "").replace("-", "").replace("_", "").upper()
                 if target == p_sym:
                     product_id = p["id"]
                     break
-            # Fallback substring match if exact match not found
             if not product_id:
-                for p in resp["result"]:
+                for p in resp_json["result"]:
                     p_sym = p.get("symbol", "").replace("-", "").replace("_", "").upper()
                     if target in p_sym or p_sym in target:
                         product_id = p["id"]
@@ -133,39 +140,42 @@ def fetch_delta_data(symbol_name, base_url):
             return None, None, None, f"Product ID not found for {symbol_name}"
 
         book_url = f"{base_url}/v2/products/{product_id}/orderbook"
-        book_resp = requests.get(book_url, timeout=5).json()
-        
-        if "result" in book_resp:
-            bids = book_resp["result"].get("bids", [])
-            asks = book_resp["result"].get("asks", [])
+        book_resp = requests.get(book_url, timeout=5)
+        if book_resp.status_code != 200:
+            return product_id, None, None, "Failed to fetch orderbook data"
+            
+        book_json = book_resp.json()
+        if "result" in book_json:
+            bids = book_json["result"].get("bids", [])
+            asks = book_json["result"].get("asks", [])
             return product_id, bids, asks, None
         else:
-            return product_id, None, None, "Failed to fetch orderbook"
+            return product_id, None, None, "Invalid orderbook structure"
     except Exception as e:
         return None, None, None, str(e)
 
-# Layout Columns
-col1, col2 = st.columns([2, 1])
+# --- VERTICAL / STACKED LAYOUT (MOBILE FRIENDLY) ---
 
-with col1:
-    st.subheader(f"📊 Live Market View ({symbol})")
-    price_placeholder = st.empty()
-    
-    fig = go.Figure(data=[go.Candlestick(
-        x=['10:00', '10:05', '10:10', '10:15'],
-        open=[67100, 67200, 67450, 67350],
-        high=[67350, 67500, 67600, 67400],
-        low=[66950, 67150, 67300, 67000],
-        close=[67200, 67450, 67350, 67050]
-    )])
-    fig.update_layout(template="plotly_dark", margin=dict(l=10, r=10, t=10, b=10), height=400)
-    st.plotly_chart(fig, use_container_width=True)
+# 1. Live Market View Section (Top)
+st.subheader(f"📊 Live Market View ({symbol})")
+price_placeholder = st.empty()
 
-with col2:
-    st.subheader("⚡ Bot Signals & Execution")
-    signal_box = st.empty()
-    execution_log = st.empty()
-    orderbook_container = st.container()
+fig = go.Figure(data=[go.Candlestick(
+    x=['10:00', '10:05', '10:10', '10:15'],
+    open=[67100, 67200, 67450, 67350],
+    high=[67350, 67500, 67600, 67400],
+    low=[66950, 67150, 67300, 67000],
+    close=[67200, 67450, 67350, 67050]
+)])
+fig.update_layout(template="plotly_dark", margin=dict(l=10, r=10, t=10, b=10), height=350)
+st.plotly_chart(fig, use_container_width=True)
+
+st.markdown("---")
+
+# 2. Bot Signals & Execution Section (Now Below Chart)
+st.subheader("⚡ Bot Signals & Execution Status")
+signal_box = st.empty()
+execution_log = st.empty()
 
 # Fetch data and evaluate signals
 product_id, bids, asks, error = fetch_delta_data(symbol, BASE_URL)
@@ -187,12 +197,7 @@ else:
         else:
             signal_box.info("⚪ NEUTRAL: Market Consolidating")
 
-        with orderbook_container:
-            st.markdown("**Top Asks (Resistance)**")
-            st.dataframe(pd.DataFrame(asks[:5], columns=["Price", "Size"]), use_container_width=True, hide_index=True)
-            st.markdown("**Top Bids (Support)**")
-            st.dataframe(pd.DataFrame(bids[:5], columns=["Price", "Size"]), use_container_width=True, hide_index=True)
-            price_placeholder.metric("Best Bid Price", f"₹ {bids[0][0]}")
+        price_placeholder.metric("Best Bid Price", f"₹ {bids[0][0]}")
 
         # --- AUTO-TRADING EXECUTION LOGIC ---
         if auto_trade_enabled and product_id:
@@ -205,7 +210,17 @@ else:
             else:
                 execution_log.info("💤 Bot waiting for strong signal...")
         else:
-            execution_log.info("ℹ️ Auto-Trading is OFF. Turn it on from sidebar.")
+            execution_log.info("ℹ️ Auto-Trading is OFF. Turn it on from sidebar to trade automatically.")
+
+        # 3. Orderbook Tables (Below Signals)
+        st.markdown("### 📚 Orderbook Walls")
+        col_ask, col_bid = st.columns(2)
+        with col_ask:
+            st.markdown("**Top Asks (Resistance)**")
+            st.dataframe(pd.DataFrame(asks[:5], columns=["Price", "Size"]), use_container_width=True, hide_index=True)
+        with col_bid:
+            st.markdown("**Top Bids (Support)**")
+            st.dataframe(pd.DataFrame(bids[:5], columns=["Price", "Size"]), use_container_width=True, hide_index=True)
 
 if st.button("🔄 Refresh Data / Run Cycle"):
     st.rerun()
