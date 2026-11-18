@@ -25,7 +25,7 @@ def fmt(x):
 
 
 # ---------------------------- डेटा --------------------------------
-@st.cache_data(ttl=10)
+@st.cache_data(ttl=1)   # 1 सेकंड रिफ्रेश के लिए कैश भी 1 सेकंड
 def get_candles(symbol, res, n):
     end = int(time.time())
     start = end - TF[res] * n
@@ -130,19 +130,33 @@ def check_breaks(price, prev_price, prev_zones):
 
 
 # ---------------------------- चार्ट --------------------------------
-def build_chart(df, zones, sig, height):
-    fig = go.Figure(
-        go.Candlestick(
-            x=df["time"],
-            open=df["open"],
-            high=df["high"],
-            low=df["low"],
-            close=df["close"],
-            increasing_line_color="#26a69a",
-            decreasing_line_color="#ef5350",
-            name="",
+def build_chart(df, zones, sig, height, smooth=False, rev="keep"):
+    if smooth:
+        # स्मूथ मोड: क्लोज़ भाव की मुलायम (spline) लाइन
+        fig = go.Figure(
+            go.Scatter(
+                x=df["time"],
+                y=df["close"],
+                mode="lines",
+                line=dict(color="#4fc3f7", width=2.2, shape="spline", smoothing=1.2),
+                name="",
+            )
         )
-    )
+        lo, hi = df["close"].min(), df["close"].max()
+    else:
+        fig = go.Figure(
+            go.Candlestick(
+                x=df["time"],
+                open=df["open"],
+                high=df["high"],
+                low=df["low"],
+                close=df["close"],
+                increasing_line_color="#26a69a",
+                decreasing_line_color="#ef5350",
+                name="",
+            )
+        )
+        lo, hi = df["low"].min(), df["high"].max()
     step = df["time"].iloc[-1] - df["time"].iloc[-2] if len(df) > 1 else pd.Timedelta(minutes=1)
     x0, x1 = df["time"].iloc[0], df["time"].iloc[-1] + step * 10
 
@@ -166,17 +180,20 @@ def build_chart(df, zones, sig, height):
             fig.add_hline(y=val, line_dash="dot", line_color=col, line_width=1,
                           annotation_text=name, annotation_position="left")
 
-    lo, hi = df["low"].min(), df["high"].max()
+    for z in zones:  # ज़ोन भी दिखें, इसलिए रेंज में जोड़ें
+        lo, hi = min(lo, z["low"]), max(hi, z["high"])
     pad = (hi - lo) * 0.08
     fig.update_layout(
         template="plotly_dark",
         height=height,
         margin=dict(l=0, r=0, t=10, b=0),
-        dragmode="pan",              # एक उँगली = खिसकाना, दो उँगली = ज़ूम
+        dragmode="pan",              # एक उँगली = खिसकाना, दो उँगली = पिंच ज़ूम
         xaxis_rangeslider_visible=False,
-        yaxis=dict(side="right", range=[lo - pad, hi + pad]),
+        xaxis=dict(fixedrange=False),   # दो उँगली दाएँ-बाएँ पिंच = समय ज़ूम
+        yaxis=dict(side="right", range=[lo - pad, hi + pad],
+                   fixedrange=False),   # दो उँगली ऊपर-नीचे पिंच = भाव ज़ूम
         showlegend=False,
-        uirevision="keep",           # रिफ्रेश पर आपका ज़ूम बना रहे
+        uirevision=rev,              # रिफ्रेश पर ज़ूम बना रहे, कॉइन/टाइमफ्रेम बदलने पर रीसेट
     )
     return fig
 
@@ -203,16 +220,57 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-c1, c2, c3 = st.columns([2, 2, 2])
+c1, c2 = st.columns(2)
 symbol = c1.selectbox("कॉइन", COINS, label_visibility="collapsed")
 tf = c2.selectbox("टाइमफ्रेम", list(TF), index=1, label_visibility="collapsed")
-focus = c3.toggle("🎯 फ़ोकस मोड", value=False)
+
+MODES = ["🎯 फ़ोकस", "⛶ फुल", "〰️ स्मूथ"]
+if hasattr(st, "pills"):
+    picked = st.pills("मोड", MODES, selection_mode="multi", label_visibility="collapsed")
+else:
+    picked = st.multiselect("मोड", MODES, label_visibility="collapsed")
+picked = picked or []
+full = MODES[1] in picked
+focus = MODES[0] in picked or full      # फुल में फ़ोकस अपने-आप शामिल
+smooth = MODES[2] in picked
+
+# दो उँगली पिंच ठीक से चले, इसलिए चार्ट पर पेज-स्क्रॉल बंद
+st.markdown(
+    "<style>.stPlotlyChart, .js-plotly-plot{touch-action:none;}</style>",
+    unsafe_allow_html=True,
+)
 
 if focus:
     st.markdown(
         "<style>header[data-testid='stHeader']{display:none;}"
         ".block-container{padding-top:0.3rem;}</style>",
         unsafe_allow_html=True,
+    )
+if full:
+    st.markdown(
+        "<style>[data-testid='stSidebar'],[data-testid='collapsedControl'],"
+        "[data-testid='stSidebarCollapsedControl']{display:none;}"
+        ".block-container{padding:0.2rem 0.4rem 0 0.4rem;max-width:100%;}</style>",
+        unsafe_allow_html=True,
+    )
+    # असली फुलस्क्रीन (ब्राउज़र/डेस्कटॉप/Android पर चलता है; iPhone Safari इसे सपोर्ट नहीं करता)
+    import streamlit.components.v1 as components
+
+    components.html(
+        """
+        <button id="fs" style="width:100%;padding:8px;border-radius:8px;border:1px solid #555;
+        background:#1e1e1e;color:#fff;font-size:15px;">⛶ पूरी स्क्रीन (Fullscreen)</button>
+        <script>
+        document.getElementById('fs').onclick = () => {
+          try {
+            const d = window.parent.document;
+            if (d.fullscreenElement) d.exitFullscreen();
+            else d.documentElement.requestFullscreen();
+          } catch (e) { alert('इस ब्राउज़र में फुलस्क्रीन उपलब्ध नहीं है'); }
+        };
+        </script>
+        """,
+        height=48,
     )
 
 with st.sidebar:
@@ -223,7 +281,7 @@ with st.sidebar:
     band_pct = st.slider("इम्बैलेंस दायरा (± %)", 0.2, 3.0, 1.0, 0.1)
     near_pct = st.slider("सिग्नल के लिए ज़ोन से दूरी (%)", 0.1, 1.5, 0.4, 0.1)
     n_candles = st.slider("कैंडल की संख्या", 50, 300, 150, 10)
-    refresh = st.slider("ऑटो-रिफ्रेश (सेकंड, 0 = बंद)", 0, 30, 5)
+    refresh = st.slider("ऑटो-रिफ्रेश (सेकंड, 0 = बंद)", 0, 30, 1)
 
 if not focus:
     st.title(f"📊 {symbol} ऑर्डर बुक ज़ोन")
@@ -278,7 +336,12 @@ def render():
     for a in new_alerts:
         st.warning(a)
 
-    fig = build_chart(df, zones, sig, height=780 if focus else 600)
+    fig = build_chart(
+        df, zones, sig,
+        height=900 if full else (780 if focus else 600),
+        smooth=smooth,
+        rev=f"{symbol}-{tf}-{'s' if smooth else 'c'}",
+    )
     show_chart(fig)
 
     if not focus:
