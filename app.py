@@ -5,6 +5,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 
 # ------------------------------------------------------------------
 # Delta Exchange India: ऑर्डर बुक ज़ोन + सिग्नल + चार्ट
@@ -241,6 +242,69 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# दो उँगली पिंच-ज़ूम (Plotly मोबाइल पर ख़ुद नहीं करता, इसलिए हम जोड़ते हैं)
+#   दाएँ-बाएँ पिंच = समय ज़ूम | ऊपर-नीचे पिंच = भाव ज़ूम | तिरछा = दोनों
+components.html(
+    """
+    <script>
+    (function () {
+      var P = window.parent, doc = P.document;
+      if (P.__pinchZoomV2) return;
+      P.__pinchZoomV2 = true;
+      var st = null;
+      function gdOf(t) {
+        while (t && t.nodeType === 1) {
+          if (t.classList.contains('js-plotly-plot')) return t;
+          t = t.parentElement;
+        }
+        return null;
+      }
+      function pts(e) {
+        var a = e.touches[0], b = e.touches[1];
+        return {dx: Math.abs(a.clientX - b.clientX), dy: Math.abs(a.clientY - b.clientY),
+                mx: (a.clientX + b.clientX) / 2, my: (a.clientY + b.clientY) / 2};
+      }
+      function wheel(el, d, x, y) {
+        if (!el || !isFinite(d)) return;
+        var left = d;
+        while (Math.abs(left) > 0.01) {
+          var step = Math.max(-20, Math.min(20, left));
+          el.dispatchEvent(new P.WheelEvent('wheel', {deltaY: step, deltaMode: 0,
+            clientX: x, clientY: y, bubbles: true, cancelable: true}));
+          left -= step;
+        }
+      }
+      doc.addEventListener('touchstart', function (e) {
+        if (e.touches.length === 2) {
+          var gd = gdOf(e.target);
+          if (gd) { st = Object.assign({gd: gd}, pts(e)); e.preventDefault(); e.stopPropagation(); }
+        }
+      }, {capture: true, passive: false});
+      doc.addEventListener('touchmove', function (e) {
+        if (!st || e.touches.length !== 2) return;
+        e.preventDefault(); e.stopPropagation();
+        var c = pts(e), gd = st.gd;
+        var sx = (st.dx > 30 && c.dx > 30) ? st.dx / c.dx : 1;
+        var sy = (st.dy > 30 && c.dy > 30) ? st.dy / c.dy : 1;
+        var ew = gd.querySelector('.ewdrag'), ns = gd.querySelector('.nsdrag');
+        if (ew && ns) {
+          if (sx !== 1) wheel(ew, 200 * Math.log(sx), c.mx, c.my);
+          if (sy !== 1) wheel(ns, 200 * Math.log(sy), c.mx, c.my);
+        } else {
+          var main = gd.querySelector('.nsewdrag');
+          wheel(main, 100 * Math.log(sx * sy), c.mx, c.my);
+        }
+        st.dx = c.dx; st.dy = c.dy; st.mx = c.mx; st.my = c.my;
+      }, {capture: true, passive: false});
+      function end(e) { if (e.touches.length < 2) st = null; }
+      doc.addEventListener('touchend', end, true);
+      doc.addEventListener('touchcancel', end, true);
+    })();
+    </script>
+    """,
+    height=0,
+)
+
 if focus:
     st.markdown(
         "<style>header[data-testid='stHeader']{display:none;}"
@@ -255,8 +319,6 @@ if full:
         unsafe_allow_html=True,
     )
     # असली फुलस्क्रीन (ब्राउज़र/डेस्कटॉप/Android पर चलता है; iPhone Safari इसे सपोर्ट नहीं करता)
-    import streamlit.components.v1 as components
-
     components.html(
         """
         <button id="fs" style="width:100%;padding:8px;border-radius:8px;border:1px solid #555;
