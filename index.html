@@ -37,7 +37,7 @@ text{font-family:inherit;fill:var(--tx)}
 <body>
 <div id="app">
  <div class="bar sp"><h1>Delta लाइव चार्ट</h1>
-  <div class="bar"><button id="zi" aria-label="ज़ूम इन">+</button><button id="zo" aria-label="ज़ूम आउट">−</button><button id="rs">रीसेट</button><button id="fsb">फुल स्क्रीन</button></div></div>
+  <div class="bar"><button id="zi" aria-label="ज़ूम इन">+</button><button id="zo" aria-label="ज़ूम आउट">−</button><button id="rs">रीसेट</button><button id="th" aria-label="लाइट या डार्क मोड">लाइट/डार्क</button><button id="fsb">फुल स्क्रीन</button></div></div>
  <div class="bar"><div style="position:relative"><input id="sym" value="UNIUSD" aria-label="कॉइन खोजें" placeholder="कॉइन खोजें (BTC, SOL...)" autocomplete="off" autocapitalize="characters"><div id="sg" role="listbox"></div></div><select id="mk" aria-label="एक्सचेंज"><option value="india">India</option><option value="global">Global</option></select><select id="tf" aria-label="टाइमफ्रेम"><option>1m</option><option>5m</option><option>10m</option><option>15m</option><option selected>1h</option><option>4h</option><option>1d</option></select><button id="ld">लोड करें</button></div>
  <div class="bar" id="chips" role="group" aria-label="फोकस मोड"><button data-f="all" aria-pressed="true">सब</button><button data-f="ob" aria-pressed="false">OB</button><button data-f="fvg" aria-pressed="false">FVG</button></div>
  <div id="wrap">
@@ -142,6 +142,9 @@ fb.onclick=function(){var on=!app.classList.contains('fs');fsSet(on);try{if(on&&
 document.addEventListener('fullscreenchange',function(){if(!document.fullscreenElement&&api&&app.classList.contains('fs')){api=false;fsSet(false)}});
 document.addEventListener('keydown',function(e){if(e.key==='Escape'&&app.classList.contains('fs')&&!document.fullscreenElement)fsSet(false)});
 if(window.ResizeObserver)new ResizeObserver(size).observe($('wrap'));else window.addEventListener('resize',size);
+var RT=document.documentElement;function ap(m){if(m)RT.setAttribute('data-theme',m);else RT.removeAttribute('data-theme')}
+try{ap(localStorage.getItem('th'))}catch(x){}
+$('th').onclick=function(){var d=RT.getAttribute('data-theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'),n=d==='dark'?'light':'dark';ap(n);try{localStorage.setItem('th',n)}catch(x){}};
 size();load();
 })();
 </script>
