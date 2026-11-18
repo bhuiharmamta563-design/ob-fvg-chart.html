@@ -38,7 +38,7 @@ text{font-family:inherit;fill:var(--tx)}
 <div id="app">
  <div class="bar sp"><h1>Delta लाइव चार्ट</h1>
   <div class="bar"><button id="zi" aria-label="ज़ूम इन">+</button><button id="zo" aria-label="ज़ूम आउट">−</button><button id="rs">रीसेट</button><button id="fsb">फुल स्क्रीन</button></div></div>
- <div class="bar"><div style="position:relative"><input id="sym" value="UNIUSD" aria-label="कॉइन खोजें" placeholder="कॉइन खोजें (BTC, SOL...)" autocomplete="off" autocapitalize="characters"><div id="sg" role="listbox"></div></div><select id="tf" aria-label="टाइमफ्रेम"><option>1m</option><option>5m</option><option>10m</option><option>15m</option><option selected>1h</option><option>4h</option><option>1d</option></select><button id="ld">लोड करें</button></div>
+ <div class="bar"><div style="position:relative"><input id="sym" value="UNIUSD" aria-label="कॉइन खोजें" placeholder="कॉइन खोजें (BTC, SOL...)" autocomplete="off" autocapitalize="characters"><div id="sg" role="listbox"></div></div><select id="mk" aria-label="एक्सचेंज"><option value="india">India</option><option value="global">Global</option></select><select id="tf" aria-label="टाइमफ्रेम"><option>1m</option><option>5m</option><option>10m</option><option>15m</option><option selected>1h</option><option>4h</option><option>1d</option></select><button id="ld">लोड करें</button></div>
  <div class="bar" id="chips" role="group" aria-label="फोकस मोड"><button data-f="all" aria-pressed="true">सब</button><button data-f="ob" aria-pressed="false">OB</button><button data-f="fvg" aria-pressed="false">FVG</button></div>
  <div id="wrap">
   <svg id="s" role="img" aria-label="कैंडल चार्ट"><g id="gr" stroke="var(--grid)" stroke-width=".5"></g><g id="zn"></g><g id="cs"></g></svg>
@@ -60,13 +60,13 @@ function Yf(p){return 210-(p-mn)/(mx-mn)*170}
 function el(n,a,p){var e=document.createElementNS(NS,n);for(var k in a)e.setAttribute(k,a[k]);p.appendChild(e);return e}
 function fp(p){return p.toFixed(p<1?5:p<100?3:2)}
 function demo(){var a=[],p=7,r=7;function R(){r=(r*9301+49297)%233280;return r/233280}for(var i=0;i<60;i++){var o=p,m=(R()-.5)*.25+(i>=40&&i<43?.4:0),c=o+m;a.push({t:1700000000+i*3600,o:o,h:Math.max(o,c)+R()*.08,l:Math.min(o,c)-R()*.08,c:c});p=c}return a}
-function render(a,label){
- D=a;Z={};cs.innerHTML='';zn.innerHTML='';gr.innerHTML='';oh.style.display='none';
+function render(a,label,keep){
+ var kp=keep?[cx,cy,w,cur]:0;if(!keep)selI=-1;D=a;Z={};cs.innerHTML='';zn.innerHTML='';gr.innerHTML='';oh.style.display='none';
  mn=1e18;mx=-1e18;a.forEach(function(c){mn=Math.min(mn,c.l);mx=Math.max(mx,c.h)});var pd=(mx-mn)*.05||1;mn-=pd;mx+=pd;
  var n=a.length;W=X(n-1)+90;
  for(var y=40;y<=210;y+=42.5)el('line',{x1:0,x2:W,y1:y,y2:y},gr);
  var f=-1,dir=0;for(var i=2;i<n;i++){if(a[i].l>a[i-2].h){f=i;dir=1}else if(a[i].h<a[i-2].l){f=i;dir=-1}}
- T.all=label+' · '+n+' कैंडल';T.ob='OB नहीं मिला।';T.fvg='हाल का कोई FVG नहीं मिला।';
+ T.all=label+' · '+n+' कैंडल'+(keep?' · '+new Date().toLocaleTimeString('hi-IN'):'');T.ob='OB नहीं मिला।';T.fvg='हाल का कोई FVG नहीं मिला।';
  if(f>0){
   var lo=dir>0?a[f-2].h:a[f].h,hi=dir>0?a[f].l:a[f-2].l,nm=dir>0?'बुलिश':'बेयरिश',x0=X(f-2)-6,x1=X(n-1)+6;
   var g=el('g',{'class':'z','data-k':'fvg'},zn);
@@ -86,27 +86,36 @@ function render(a,label){
   el('rect',{x:x-4,y:Yf(Math.max(c.o,c.c)),width:8,height:Math.max(1,Math.abs(Yf(c.o)-Yf(c.c))),fill:col},cs);
   el('rect',{x:x-6,y:Yf(c.h)-2,width:12,height:Yf(c.l)-Yf(c.h)+4,fill:'transparent','data-i':i},cs)});
  sel=el('rect',{fill:'none',stroke:'var(--tx)','stroke-width':.8,'stroke-dasharray':'2 2',visibility:'hidden',rx:2,'pointer-events':'none'},cs);
- set('all',true);
+ set(kp?kp[3]:'all',true);if(kp){cx=kp[0];cy=kp[1];w=kp[2];draw();if(selI>=0)show(selI)}
 }
-function show(i){if(i<0){oh.style.display='none';sel.setAttribute('visibility','hidden');return}
+function show(i){selI=i;if(i<0){oh.style.display='none';sel.setAttribute('visibility','hidden');return}
  var c=D[i],ch=(c.c-c.o)/c.o*100,col=c.c<c.o?'var(--dn)':'var(--up)',x=X(i);
  oh.innerHTML='<span class="t">'+new Date(c.t*1000).toLocaleString('hi-IN',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})+'</span><span>O खुला <b>'+fp(c.o)+'</b></span><span>H ऊँचा <b>'+fp(c.h)+'</b></span><span>L नीचा <b>'+fp(c.l)+'</b></span><span>C बंद <b>'+fp(c.c)+'</b></span><span class="t" style="color:'+col+'">बदलाव '+(ch>=0?'+':'')+ch.toFixed(2)+'%</span>';
  oh.style.display='grid';sel.setAttribute('x',x-7);sel.setAttribute('y',Yf(c.h)-3);sel.setAttribute('width',14);sel.setAttribute('height',Yf(c.l)-Yf(c.h)+6);sel.setAttribute('visibility','visible')}
 function pick(t){var i=t&&t.getAttribute?t.getAttribute('data-i'):null;show(i===null?-1:+i)}
 var PL=['BTCUSD','ETHUSD','SOLUSD','XRPUSD','DOGEUSD','UNIUSD','ADAUSD','AVAXUSD','LINKUSD','BNBUSD'],sg=$('sg');
-fetch('https://api.india.delta.exchange/v2/products').then(function(r){return r.json()}).then(function(j){var l=(j.result||[]).filter(function(p){return p.symbol&&(p.contract_type?p.contract_type==='perpetual_futures':/^[A-Z0-9]+USD$/.test(p.symbol))}).map(function(p){return p.symbol}).sort();if(l.length)PL=l}).catch(function(){});
+var HS={india:['https://api.india.delta.exchange','https://cdn.india.deltaex.org'],global:['https://api.delta.exchange']};
+function F(path){var hs=HS[$('mk').value]||HS.india,i=0;function nx(err){if(i>=hs.length)return Promise.reject(err);return fetch(hs[i++]+path).then(function(r){return r.json()}).catch(nx)}return nx()}
+function lp(){F('/v2/products?contract_types=perpetual_futures&states=live&page_size=500').then(function(j){var l=(j.result||[]).filter(function(p){return p.symbol&&(p.contract_type?p.contract_type==='perpetual_futures':/^[A-Z0-9]+USD$/.test(p.symbol))}).map(function(p){return p.symbol}).sort();if(l.length)PL=l}).catch(function(){})}
+lp();$('mk').onchange=function(){lp();load()};
 function sug(){var q=$('sym').value.trim().toUpperCase(),m=PL.filter(function(x){return !q||x.indexOf(q)>-1}).sort(function(a,b){return (a.indexOf(q)===0?0:1)-(b.indexOf(q)===0?0:1)||a.length-b.length}).slice(0,8);sg.innerHTML='';m.forEach(function(x){var b=document.createElement('button');b.textContent=x;b.setAttribute('role','option');b.onclick=function(){$('sym').value=x;sg.style.display='none';load()};sg.appendChild(b)});sg.style.display=m.length?'block':'none'}
 $('sym').addEventListener('input',sug);$('sym').addEventListener('focus',function(){$('sym').select();sug()});
 $('sym').addEventListener('keydown',function(e){if(e.key==='Enter'){sg.style.display='none';$('sym').blur();load()}});
 document.addEventListener('click',function(e){if(!e.target.closest('#sg')&&e.target.id!=='sym')sg.style.display='none'});
 function agg(a){var o=[],m={};a.forEach(function(c){var k=Math.floor(c.t/600)*600,g=m[k];if(!g){g=m[k]={t:k,o:c.o,h:c.h,l:c.l,c:c.c};o.push(g)}else{g.h=Math.max(g.h,c.h);g.l=Math.min(g.l,c.l);g.c=c.c}});return o}
+var LV=null,TM=0,selI=-1;
+function U(sym,rs,st,e){return '/v2/history/candles?symbol='+encodeURIComponent(sym)+'&resolution='+rs+'&start='+st+'&end='+e}
+function P2(j,tf){var a=((j&&j.result)||[]).map(function(c){return{t:+c.time,o:+c.open,h:+c.high,l:+c.low,c:+c.close}}).sort(function(p,q){return p.t-q.t});return tf==='10m'?agg(a):a}
 function load(){
- var sym=($('sym').value.trim()||'UNIUSD').toUpperCase(),tf=$('tf').value,e=Math.floor(Date.now()/1000),st=e-SEC[tf]*70,rs=tf==='10m'?'5m':tf;
+ clearInterval(TM);LV=null;
+ var sym=($('sym').value.trim()||'UNIUSD').toUpperCase(),tf=$('tf').value,e=Math.floor(Date.now()/1000),rs=tf==='10m'?'5m':tf;
  info.textContent='लोड हो रहा है...';
- fetch('https://api.india.delta.exchange/v2/history/candles?symbol='+encodeURIComponent(sym)+'&resolution='+rs+'&start='+st+'&end='+e)
- .then(function(r){return r.json()}).then(function(j){var a=(j&&j.result)||[];if(!a.length)throw 0;
-  a=a.map(function(c){return{t:+c.time,o:+c.open,h:+c.high,l:+c.low,c:+c.close}}).sort(function(p,q){return p.t-q.t});if(tf==='10m')a=agg(a);a=a.slice(-60);render(a,sym+' '+tf+' (लाइव)')})
- .catch(function(){render(demo(),'डेमो डेटा');info.textContent='लाइव डेटा नहीं आया (सिंबल गलत, नेटवर्क या ब्राउज़र की रोक)। अभी डेमो दिख रहा है।'})}
+ F(U(sym,rs,e-SEC[tf]*70,e)).then(function(j){var a=P2(j,tf);if(!a.length)throw new Error(j&&j.error?JSON.stringify(j.error).slice(0,90):'खाली डेटा, सिंबल जाँचें');a=a.slice(-60);LV={sym:sym,tf:tf,rs:rs,lab:sym+' '+tf+' (लाइव)'};render(a,LV.lab);TM=setInterval(tick,4000)})
+ .catch(function(er){render(demo(),'डेमो डेटा');var m=String(er&&er.message||er);info.textContent='लाइव डेटा नहीं आया: '+(/fetch|Network|Load failed/i.test(m)?'ब्राउज़र ने रोका (CORS) या इंटरनेट नहीं':m)+'। अभी डेमो दिख रहा है।'})}
+function tick(){if(!LV||document.hidden)return;var e=Math.floor(Date.now()/1000),L=LV;
+ F(U(L.sym,L.rs,e-SEC[L.tf]*3,e)).then(function(j){if(L!==LV)return;var a=P2(j,L.tf);if(!a.length)return;
+  a.forEach(function(c){for(var k=D.length-1;k>=Math.max(0,D.length-5);k--)if(D[k].t===c.t){D[k]=c;return}if(c.t>D[D.length-1].t)D.push(c)});
+  D=D.slice(-60);render(D,L.lab,1)}).catch(function(){})}
 function draw(){var h=w/ar;s.setAttribute('viewBox',(cx-w/2)+' '+(cy-h/2)+' '+w+' '+h)}
 function fitW(){return Math.max(W,230*ar)}
 function size(){var r=s.getBoundingClientRect();if(r.width&&r.height){ar=r.width/r.height;draw()}}
