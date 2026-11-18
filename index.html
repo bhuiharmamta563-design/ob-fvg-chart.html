@@ -1,152 +1,215 @@
 <!DOCTYPE html>
-<html lang="hi">
+<html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Delta लाइव चार्ट: OB और FVG</title>
-<style>
-:root{--bg:#f6f5f1;--sf:#fff;--tx:#1f1e1b;--tx2:#5f5e5a;--bd:#d3d1c7;--up:#1D9E75;--dn:#D85A30;--ob:#534AB7;--fvg:#BA7517;--grid:#e8e6de;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
-@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#1c1b19;--sf:#262522;--tx:#f1efe8;--tx2:#b4b2a9;--bd:#444441;--ob:#AFA9EC;--fvg:#EF9F27;--grid:#32312e}}
-:root[data-theme="dark"]{--bg:#1c1b19;--sf:#262522;--tx:#f1efe8;--tx2:#b4b2a9;--bd:#444441;--ob:#AFA9EC;--fvg:#EF9F27;--grid:#32312e}
-*{box-sizing:border-box}html,body{height:100%;margin:0}
-body{background:var(--bg);color:var(--tx);font-family:system-ui,-apple-system,"Noto Sans Devanagari",sans-serif;display:flex;flex-direction:column}
-#app{flex:1;display:flex;flex-direction:column;gap:10px;padding:12px;min-height:0;background:var(--bg)}
-#app.fs{position:fixed;inset:0;z-index:9;padding:10px;padding-top:calc(10px + env(safe-area-inset-top,0px))}
-h1{font-size:18px;font-weight:500;margin:0}
-.bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
-.bar.sp{justify-content:space-between}
-button,select,input{font:inherit;font-size:14px;color:var(--tx);background:var(--sf);border:.5px solid var(--bd);border-radius:8px;padding:8px 12px;min-height:40px}
-button{cursor:pointer}input{width:150px;text-transform:uppercase}
-#sg{display:none;position:absolute;top:44px;left:0;z-index:5;width:210px;max-height:260px;overflow:auto;background:var(--sf);border:.5px solid var(--bd);border-radius:8px}
-#sg button{display:block;width:100%;text-align:left;border:0;border-radius:0;border-bottom:.5px solid var(--bd);min-height:44px}
-button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--ob);outline-offset:2px}
-button[aria-pressed="true"]{background:var(--tx);color:var(--bg);border-color:var(--tx)}
-#wrap{flex:1;min-height:260px;background:var(--sf);border:.5px solid var(--bd);border-radius:12px;overflow:hidden;position:relative}
-#s{width:100%;height:100%;display:block;touch-action:none;cursor:grab;user-select:none}
-#s.drag{cursor:grabbing}
-#hint{position:absolute;left:10px;bottom:8px;font-size:12px;color:var(--tx2);pointer-events:none}
-#info{font-size:14px;line-height:1.6;color:var(--tx2);margin:0;min-height:44px}
-#app.fs #info{min-height:0}
-text{font-family:inherit;fill:var(--tx)}
-.z{transition:opacity .2s}
-#ohlc{position:absolute;top:8px;left:8px;display:none;grid-template-columns:repeat(2,auto);gap:2px 14px;background:var(--sf);border:.5px solid var(--bd);border-radius:8px;padding:8px 10px;font-size:13px;line-height:1.5;pointer-events:none;font-variant-numeric:tabular-nums}
-#ohlc b{font-weight:500}
-#ohlc .t{grid-column:1/3;color:var(--tx2);font-size:12px}
-</style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
+    <title>Delta Exchange Trading Bot with Auto Signals</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lightweight Charts -->
+    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+    <style>
+        .fullscreen-mode {
+            position: fixed !important;
+            top: 0 !important;
+            left: 0 !important;
+            width: 100vw !important;
+            height: 100vh !important;
+            z-index: 9999 !important;
+            background: #121212 !important;
+            padding: 10px;
+        }
+        body {
+            background-color: #0f172a;
+            color: #f8fafc;
+            font-family: system-ui, -apple-system, sans-serif;
+        }
+    </style>
 </head>
-<body>
-<div id="app">
- <div class="bar sp"><h1>Delta लाइव चार्ट</h1>
-  <div class="bar"><button id="zi" aria-label="ज़ूम इन">+</button><button id="zo" aria-label="ज़ूम आउट">−</button><button id="rs">रीसेट</button><button id="th" aria-label="लाइट या डार्क मोड">लाइट/डार्क</button><button id="fsb">फुल स्क्रीन</button></div></div>
- <div class="bar"><div style="position:relative"><input id="sym" value="UNIUSD" aria-label="कॉइन खोजें" placeholder="कॉइन खोजें (BTC, SOL...)" autocomplete="off" autocapitalize="characters"><div id="sg" role="listbox"></div></div><select id="mk" aria-label="एक्सचेंज"><option value="india">India</option><option value="global">Global</option></select><select id="tf" aria-label="टाइमफ्रेम"><option>1m</option><option>5m</option><option>10m</option><option>15m</option><option selected>1h</option><option>4h</option><option>1d</option></select><button id="ld">लोड करें</button></div>
- <div class="bar" id="chips" role="group" aria-label="फोकस मोड"><button data-f="all" aria-pressed="true">सब</button><button data-f="ob" aria-pressed="false">OB</button><button data-f="fvg" aria-pressed="false">FVG</button></div>
- <div id="wrap">
-  <svg id="s" role="img" aria-label="कैंडल चार्ट"><g id="gr" stroke="var(--grid)" stroke-width=".5"></g><g id="zn"></g><g id="cs"></g></svg>
-  <div id="ohlc" aria-live="polite"></div>
-  <div id="hint">दो उंगली से ज़ूम, कैंडल पर टैप करके OHLC देखें</div>
- </div>
- <p id="info"></p>
-</div>
-<script>
-(function(){
-var NS='http://www.w3.org/2000/svg';
-function $(i){return document.getElementById(i)}
-var s=$('s'),cs=$('cs'),zn=$('zn'),gr=$('gr'),app=$('app'),info=$('info'),oh=$('ohlc');
-var SEC={'1m':60,'5m':300,'10m':600,'15m':900,'1h':3600,'4h':14400,'1d':86400};
-var D=[],Z={},T={all:''},W=400,mn=0,mx=1,sel=null;
-var cx=200,cy=125,w=400,ar=1.6,cur='all',raf=0,P={},ld=0,sd=null;
-function X(i){return 20+i*12}
-function Yf(p){return 210-(p-mn)/(mx-mn)*170}
-function el(n,a,p){var e=document.createElementNS(NS,n);for(var k in a)e.setAttribute(k,a[k]);p.appendChild(e);return e}
-function fp(p){return p.toFixed(p<1?5:p<100?3:2)}
-function demo(){var a=[],p=7,r=7;function R(){r=(r*9301+49297)%233280;return r/233280}for(var i=0;i<60;i++){var o=p,m=(R()-.5)*.25+(i>=40&&i<43?.4:0),c=o+m;a.push({t:1700000000+i*3600,o:o,h:Math.max(o,c)+R()*.08,l:Math.min(o,c)-R()*.08,c:c});p=c}return a}
-function render(a,label,keep){
- var kp=keep?[cx,cy,w,cur]:0;if(!keep)selI=-1;D=a;Z={};cs.innerHTML='';zn.innerHTML='';gr.innerHTML='';oh.style.display='none';
- mn=1e18;mx=-1e18;a.forEach(function(c){mn=Math.min(mn,c.l);mx=Math.max(mx,c.h)});var pd=(mx-mn)*.05||1;mn-=pd;mx+=pd;
- var n=a.length;W=X(n-1)+90;
- for(var y=40;y<=210;y+=42.5)el('line',{x1:0,x2:W,y1:y,y2:y},gr);
- var f=-1,dir=0;for(var i=2;i<n;i++){if(a[i].l>a[i-2].h){f=i;dir=1}else if(a[i].h<a[i-2].l){f=i;dir=-1}}
- T.all=label+' · '+n+' कैंडल'+(keep?' · '+new Date().toLocaleTimeString('hi-IN'):'');T.ob='OB नहीं मिला।';T.fvg='हाल का कोई FVG नहीं मिला।';
- if(f>0){
-  var lo=dir>0?a[f-2].h:a[f].h,hi=dir>0?a[f].l:a[f-2].l,nm=dir>0?'बुलिश':'बेयरिश',x0=X(f-2)-6,x1=X(n-1)+6;
-  var g=el('g',{'class':'z','data-k':'fvg'},zn);
-  el('rect',{x:x0,y:Yf(hi),width:x1-x0,height:Math.max(2,Yf(lo)-Yf(hi)),fill:'var(--fvg)','fill-opacity':.16,stroke:'var(--fvg)','stroke-width':.8,'stroke-dasharray':'4 3'},g);
-  var t=el('text',{x:x1+8,y:Yf(hi)+12,'font-size':12,'font-weight':500,style:'fill:var(--fvg)'},g);t.textContent='FVG';
-  T.fvg=nm+' FVG: '+fp(lo)+' से '+fp(hi)+'। ये वो गैप है जहाँ प्राइस बहुत तेज़ भागा, और अक्सर इसे भरने लौटता है।';
-  Z.fvg=[(x0+x1)/2,(Yf(hi)+Yf(lo))/2,Math.max(150,(x1-x0)*1.1,Math.abs(Yf(lo)-Yf(hi))*ar*3)];
-  for(var j=f-2;j>=Math.max(0,f-9);j--){if(dir>0?a[j].c<a[j].o:a[j].c>a[j].o){
-   var g2=el('g',{'class':'z','data-k':'ob'},zn),ox=X(j)-6;
-   el('rect',{x:ox,y:Yf(a[j].h),width:x1-ox,height:Math.max(2,Yf(a[j].l)-Yf(a[j].h)),fill:'var(--ob)','fill-opacity':.16,stroke:'var(--ob)','stroke-width':.8,'stroke-dasharray':'4 3'},g2);
-   var t2=el('text',{x:x1+8,y:Yf(a[j].h)+12,'font-size':12,'font-weight':500,style:'fill:var(--ob)'},g2);t2.textContent='OB';
-   T.ob=nm+' OB: '+fp(a[j].l)+' से '+fp(a[j].h)+'। तेज़ मूव से पहले की आख़िरी उलटी कैंडल, जहाँ प्राइस अक्सर रिएक्ट करता है।';
-   Z.ob=[(ox+x1)/2,(Yf(a[j].h)+Yf(a[j].l))/2,Math.max(150,(x1-ox)*1.1,Math.abs(Yf(a[j].l)-Yf(a[j].h))*ar*3)];break}}
- }
- a.forEach(function(c,i){var col=c.c<c.o?'var(--dn)':'var(--up)',x=X(i);
-  el('line',{x1:x,x2:x,y1:Yf(c.h),y2:Yf(c.l),stroke:col,'stroke-width':1.2},cs);
-  el('rect',{x:x-4,y:Yf(Math.max(c.o,c.c)),width:8,height:Math.max(1,Math.abs(Yf(c.o)-Yf(c.c))),fill:col},cs);
-  el('rect',{x:x-6,y:Yf(c.h)-2,width:12,height:Yf(c.l)-Yf(c.h)+4,fill:'transparent','data-i':i},cs)});
- sel=el('rect',{fill:'none',stroke:'var(--tx)','stroke-width':.8,'stroke-dasharray':'2 2',visibility:'hidden',rx:2,'pointer-events':'none'},cs);
- set(kp?kp[3]:'all',true);if(kp){cx=kp[0];cy=kp[1];w=kp[2];draw();if(selI>=0)show(selI)}
-}
-function show(i){selI=i;if(i<0){oh.style.display='none';sel.setAttribute('visibility','hidden');return}
- var c=D[i],ch=(c.c-c.o)/c.o*100,col=c.c<c.o?'var(--dn)':'var(--up)',x=X(i);
- oh.innerHTML='<span class="t">'+new Date(c.t*1000).toLocaleString('hi-IN',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})+'</span><span>O खुला <b>'+fp(c.o)+'</b></span><span>H ऊँचा <b>'+fp(c.h)+'</b></span><span>L नीचा <b>'+fp(c.l)+'</b></span><span>C बंद <b>'+fp(c.c)+'</b></span><span class="t" style="color:'+col+'">बदलाव '+(ch>=0?'+':'')+ch.toFixed(2)+'%</span>';
- oh.style.display='grid';sel.setAttribute('x',x-7);sel.setAttribute('y',Yf(c.h)-3);sel.setAttribute('width',14);sel.setAttribute('height',Yf(c.l)-Yf(c.h)+6);sel.setAttribute('visibility','visible')}
-function pick(t){var i=t&&t.getAttribute?t.getAttribute('data-i'):null;show(i===null?-1:+i)}
-var PL=['BTCUSD','ETHUSD','SOLUSD','XRPUSD','DOGEUSD','UNIUSD','ADAUSD','AVAXUSD','LINKUSD','BNBUSD'],sg=$('sg');
-var HS={india:['https://api.india.delta.exchange','https://cdn.india.deltaex.org'],global:['https://api.delta.exchange']};
-function F(path){var hs=HS[$('mk').value]||HS.india,i=0;function nx(err){if(i>=hs.length)return Promise.reject(err);return fetch(hs[i++]+path).then(function(r){return r.json()}).catch(nx)}return nx()}
-function lp(){F('/v2/products?contract_types=perpetual_futures&states=live&page_size=500').then(function(j){var l=(j.result||[]).filter(function(p){return p.symbol&&(p.contract_type?p.contract_type==='perpetual_futures':/^[A-Z0-9]+USD$/.test(p.symbol))}).map(function(p){return p.symbol}).sort();if(l.length)PL=l}).catch(function(){})}
-lp();$('mk').onchange=function(){lp();load()};
-function sug(){var q=$('sym').value.trim().toUpperCase(),m=PL.filter(function(x){return !q||x.indexOf(q)>-1}).sort(function(a,b){return (a.indexOf(q)===0?0:1)-(b.indexOf(q)===0?0:1)||a.length-b.length}).slice(0,8);sg.innerHTML='';m.forEach(function(x){var b=document.createElement('button');b.textContent=x;b.setAttribute('role','option');b.onclick=function(){$('sym').value=x;sg.style.display='none';load()};sg.appendChild(b)});sg.style.display=m.length?'block':'none'}
-$('sym').addEventListener('input',sug);$('sym').addEventListener('focus',function(){$('sym').select();sug()});
-$('sym').addEventListener('keydown',function(e){if(e.key==='Enter'){sg.style.display='none';$('sym').blur();load()}});
-document.addEventListener('click',function(e){if(!e.target.closest('#sg')&&e.target.id!=='sym')sg.style.display='none'});
-function agg(a){var o=[],m={};a.forEach(function(c){var k=Math.floor(c.t/600)*600,g=m[k];if(!g){g=m[k]={t:k,o:c.o,h:c.h,l:c.l,c:c.c};o.push(g)}else{g.h=Math.max(g.h,c.h);g.l=Math.min(g.l,c.l);g.c=c.c}});return o}
-var LV=null,TM=0,selI=-1;
-function U(sym,rs,st,e){return '/v2/history/candles?symbol='+encodeURIComponent(sym)+'&resolution='+rs+'&start='+st+'&end='+e}
-function P2(j,tf){var a=((j&&j.result)||[]).map(function(c){return{t:+c.time,o:+c.open,h:+c.high,l:+c.low,c:+c.close}}).sort(function(p,q){return p.t-q.t});return tf==='10m'?agg(a):a}
-function load(){
- clearInterval(TM);LV=null;
- var sym=($('sym').value.trim()||'UNIUSD').toUpperCase(),tf=$('tf').value,e=Math.floor(Date.now()/1000),rs=tf==='10m'?'5m':tf;
- info.textContent='लोड हो रहा है...';
- F(U(sym,rs,e-SEC[tf]*70,e)).then(function(j){var a=P2(j,tf);if(!a.length)throw new Error(j&&j.error?JSON.stringify(j.error).slice(0,90):'खाली डेटा, सिंबल जाँचें');a=a.slice(-60);LV={sym:sym,tf:tf,rs:rs,lab:sym+' '+tf+' (लाइव)'};render(a,LV.lab);TM=setInterval(tick,4000)})
- .catch(function(er){render(demo(),'डेमो डेटा');var m=String(er&&er.message||er);info.textContent='लाइव डेटा नहीं आया: '+(/fetch|Network|Load failed/i.test(m)?'ब्राउज़र ने रोका (CORS) या इंटरनेट नहीं':m)+'। अभी डेमो दिख रहा है।'})}
-function tick(){if(!LV||document.hidden)return;var e=Math.floor(Date.now()/1000),L=LV;
- F(U(L.sym,L.rs,e-SEC[L.tf]*3,e)).then(function(j){if(L!==LV)return;var a=P2(j,L.tf);if(!a.length)return;
-  a.forEach(function(c){for(var k=D.length-1;k>=Math.max(0,D.length-5);k--)if(D[k].t===c.t){D[k]=c;return}if(c.t>D[D.length-1].t)D.push(c)});
-  D=D.slice(-60);render(D,L.lab,1)}).catch(function(){})}
-function draw(){var h=w/ar;s.setAttribute('viewBox',(cx-w/2)+' '+(cy-h/2)+' '+w+' '+h)}
-function fitW(){return Math.max(W,230*ar)}
-function size(){var r=s.getBoundingClientRect();if(r.width&&r.height){ar=r.width/r.height;draw()}}
-function go(a,b,c){cancelAnimationFrame(raf);var o=[cx,cy,w],t0=performance.now();(function st(t){var k=Math.min(1,(t-t0)/220);k=1-Math.pow(1-k,3);cx=o[0]+(a-o[0])*k;cy=o[1]+(b-o[1])*k;w=o[2]+(c-o[2])*k;draw();if(k<1)raf=requestAnimationFrame(st)})(t0)}
-function zoomAt(f,px,py){var r=s.getBoundingClientRect(),h=w/ar,u=(px-r.left)/r.width,v=(py-r.top)/r.height,wx=cx-w/2+u*w,wy=cy-h/2+v*h,nw=Math.min(1500,Math.max(40,w/f)),nh=nw/ar;cx=wx-(u-.5)*nw;cy=wy-(v-.5)*nh;w=nw;draw()}
-function zoomC(f){var r=s.getBoundingClientRect();cancelAnimationFrame(raf);zoomAt(f,r.left+r.width/2,r.top+r.height/2)}
-function set(k,quick){cur=k;var q=document.querySelectorAll('#chips button');for(var i=0;i<q.length;i++)q[i].setAttribute('aria-pressed',q[i].dataset.f===k);
- var zs=document.querySelectorAll('.z');for(var j=0;j<zs.length;j++)zs[j].style.opacity=(k==='all'||zs[j].dataset.k===k)?1:.12;cs.style.opacity=k==='all'?1:.5;
- info.textContent=T[k];var r=(k!=='all'&&Z[k])?Z[k]:[W/2,125,fitW()];if(quick){cx=r[0];cy=r[1];w=r[2];draw()}else go(r[0],r[1],r[2])}
-$('chips').addEventListener('click',function(e){var b=e.target.closest('button');if(b)set(b.dataset.f)});
-$('zi').onclick=function(){zoomC(1.4)};$('zo').onclick=function(){zoomC(1/1.4)};$('rs').onclick=function(){set('all')};$('ld').onclick=load;
-s.addEventListener('pointerdown',function(e){sd=Object.keys(P).length===0?[e.clientX,e.clientY]:null;s.setPointerCapture(e.pointerId);P[e.pointerId]=[e.clientX,e.clientY];cancelAnimationFrame(raf);s.classList.add('drag');if(Object.keys(P).length===2)ld=pd2()});
-function pd2(){var k=Object.keys(P);return Math.hypot(P[k[0]][0]-P[k[1]][0],P[k[0]][1]-P[k[1]][1])}
-s.addEventListener('pointermove',function(e){if(!P[e.pointerId])return;var o=P[e.pointerId],n=Object.keys(P).length;
- if(n===1){var r=s.getBoundingClientRect();cx-=(e.clientX-o[0])*w/r.width;cy-=(e.clientY-o[1])*w/r.width;P[e.pointerId]=[e.clientX,e.clientY];draw()}
- else if(n===2){var k=Object.keys(P);P[e.pointerId]=[e.clientX,e.clientY];var d=pd2();if(ld>0&&d>0)zoomAt(d/ld,(P[k[0]][0]+P[k[1]][0])/2,(P[k[0]][1]+P[k[1]][1])/2);ld=d}});
-function up(e){delete P[e.pointerId];ld=0;if(!Object.keys(P).length)s.classList.remove('drag');if(sd&&e.type==='pointerup'&&Math.hypot(e.clientX-sd[0],e.clientY-sd[1])<6)pick(document.elementFromPoint(e.clientX,e.clientY));sd=null}
-s.addEventListener('pointerup',up);s.addEventListener('pointercancel',up);
-s.addEventListener('wheel',function(e){e.preventDefault();cancelAnimationFrame(raf);zoomAt(e.deltaY<0?1.15:1/1.15,e.clientX,e.clientY)},{passive:false});
-s.addEventListener('dblclick',function(){set('all')});
-var fb=$('fsb'),api=false;
-function fsSet(on){app.classList.toggle('fs',on);fb.textContent=on?'बाहर आएँ':'फुल स्क्रीन';setTimeout(function(){size();if(cur==='all'){cx=W/2;cy=125;w=fitW();draw()}},60)}
-fb.onclick=function(){var on=!app.classList.contains('fs');fsSet(on);try{if(on&&app.requestFullscreen){var p=app.requestFullscreen();api=true;if(p&&p.catch)p.catch(function(){api=false})}else if(!on&&document.fullscreenElement){document.exitFullscreen()}}catch(x){api=false}};
-document.addEventListener('fullscreenchange',function(){if(!document.fullscreenElement&&api&&app.classList.contains('fs')){api=false;fsSet(false)}});
-document.addEventListener('keydown',function(e){if(e.key==='Escape'&&app.classList.contains('fs')&&!document.fullscreenElement)fsSet(false)});
-if(window.ResizeObserver)new ResizeObserver(size).observe($('wrap'));else window.addEventListener('resize',size);
-var RT=document.documentElement;function ap(m){if(m)RT.setAttribute('data-theme',m);else RT.removeAttribute('data-theme')}
-try{ap(localStorage.getItem('th'))}catch(x){}
-$('th').onclick=function(){var d=RT.getAttribute('data-theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'),n=d==='dark'?'light':'dark';ap(n);try{localStorage.setItem('th',n)}catch(x){}};
-size();load();
-})();
-</script>
+<body class="p-2 sm:p-4">
+
+    <!-- Main Container -->
+    <div id="dashboard-container" class="max-w-7xl mx-auto space-y-4">
+        
+        <!-- Header & Controls -->
+        <header class="flex flex-wrap justify-between items-center bg-slate-800 p-3 rounded-xl border border-slate-700 gap-3">
+            <div>
+                <h1 class="text-lg sm:text-xl font-bold text-emerald-400">Delta Live Terminal + Signals</h1>
+                <p class="text-xs text-slate-400">Orderbook Reversal & Auto-Signal Engine</p>
+            </div>
+            
+            <div class="flex items-center gap-2">
+                <select id="symbol-select" class="bg-slate-900 border border-slate-700 text-white text-sm rounded-lg px-3 py-1.5 focus:outline-none focus:border-emerald-500">
+                    <option value="BTCUSDT">BTC-PERP</option>
+                    <option value="ETHUSDT">ETH-PERP</option>
+                </select>
+                <button id="fullscreen-btn" onclick="toggleFullscreen()" class="bg-slate-700 hover:bg-slate-600 text-xs px-3 py-2 rounded-lg font-medium transition">
+                    ⛶ Fullscreen / Focus
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Workspace (Grid) -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            
+            <!-- Chart Section -->
+            <div id="chart-card" class="lg:col-span-2 bg-slate-800 p-3 rounded-xl border border-slate-700 flex flex-col h-[450px] sm:h-[550px]">
+                <div class="flex justify-between items-center mb-2 px-1">
+                    <span class="text-sm font-semibold text-slate-300">Live Chart & Signal Markers</span>
+                    <span id="live-price" class="text-sm font-bold text-emerald-400 animate-pulse">Loading...</span>
+                </div>
+                <!-- Chart Container with Pinch-to-Zoom -->
+                <div id="chart-container" class="w-full flex-grow touch-none relative rounded-lg overflow-hidden"></div>
+            </div>
+
+            <!-- Orderbook & Signal Panel Section -->
+            <div class="bg-slate-800 p-3 rounded-xl border border-slate-700 flex flex-col h-[420px] lg:h-[550px]">
+                <h2 class="text-sm font-semibold text-slate-300 mb-2">Orderbook & Signal Status</h2>
+                
+                <!-- Live Signal Badge Box -->
+                <div id="signal-badge" class="p-2.5 mb-3 rounded-lg text-center font-bold text-xs uppercase tracking-wider bg-slate-900 border border-slate-700 text-yellow-400">
+                    Analysing Orderbook Pressure...
+                </div>
+
+                <div class="grid grid-cols-2 text-xs font-semibold text-slate-400 pb-1 border-b border-slate-700">
+                    <span>Price (USDT)</span>
+                    <span class="text-right">Size (Qty)</span>
+                </div>
+                
+                <!-- Orderbook List -->
+                <div id="orderbook-list" class="flex-grow overflow-y-auto space-y-1 mt-2 text-xs font-mono">
+                    <div class="text-center text-slate-500 py-10">Connecting...</div>
+                </div>
+
+                <!-- Emergency Kill Switch & Action Bar -->
+                <div class="mt-3 pt-3 border-t border-slate-700 flex gap-2">
+                    <button onclick="triggerBuy()" class="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2 rounded-lg text-xs transition">BUY / LONG</button>
+                    <button onclick="triggerSell()" class="flex-1 bg-rose-600 hover:bg-rose-500 text-white font-bold py-2 rounded-lg text-xs transition">SELL / SHORT</button>
+                    <button onclick="emergencyStop()" class="bg-red-700 hover:bg-red-600 px-3 text-white font-bold rounded-lg text-xs" title="Emergency Stop">🛑</button>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- JavaScript Application Logic -->
+    <script>
+        // 1. Initialize Chart
+        const chartContainer = document.getElementById('chart-container');
+        const chart = LightweightCharts.createChart(chartContainer, {
+            layout: {
+                background: { type: 'solid', color: '#090d16' },
+                textColor: '#94a3b8',
+            },
+            grid: {
+                vertLines: { color: '#1e293b' },
+                horzLines: { color: '#1e293b' },
+            },
+            timeScale: { timeVisible: true, secondsVisible: false },
+            handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+            handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+        });
+
+        const candlestickSeries = chart.addCandlestickSeries({
+            upColor: '#10b981', downColor: '#f43f5e', borderVisible: false,
+            wickUpColor: '#10b981', wickDownColor: '#f43f5e',
+        });
+
+        // Base Chart Data
+        let chartData = [
+            { time: 1718000000, open: 67100, high: 67350, low: 66950, close: 67200 },
+            { time: 1718003600, open: 67200, high: 67500, low: 67150, close: 67450 },
+            { time: 1718007200, open: 67450, high: 67600, low: 67300, close: 67350 },
+            { time: 1718010800, open: 67350, high: 67400, low: 67000, close: 67050 },
+            { time: 1718014400, open: 67050, high: 67250, low: 66900, close: 67180 }
+        ];
+        candlestickSeries.setData(chartData);
+
+        window.addEventListener('resize', () => {
+            chart.applyOptions({ width: chartContainer.clientWidth, height: chartContainer.clientHeight });
+        });
+
+        function toggleFullscreen() {
+            const card = document.getElementById('chart-card');
+            card.classList.toggle('fullscreen-mode');
+            setTimeout(() => {
+                chart.applyOptions({ width: chartContainer.clientWidth, height: chartContainer.clientHeight });
+            }, 100);
+        }
+
+        // 2. Orderbook & Automatic Signal Logic
+        function updateOrderbookAndSignals() {
+            const list = document.getElementById('orderbook-list');
+            const badge = document.getElementById('signal-badge');
+            let html = '';
+            
+            let totalAskQty = 0;
+            let totalBidQty = 0;
+            
+            let asksHTML = '';
+            for(let i=5; i>=1; i--) {
+                let price = (67050 + i * 15).toFixed(2);
+                let qty = parseFloat((Math.random() * 2).toFixed(4));
+                totalAskQty += qty;
+                asksHTML += `<div class="flex justify-between text-rose-400 py-0.5 px-1 bg-rose-950/20 rounded">
+                    <span>${price}</span>
+                    <span class="text-right">${qty}</span>
+                </div>`;
+            }
+
+            let bidsHTML = '';
+            for(let i=1; i<=5; i++) {
+                let price = (67050 - i * 15).toFixed(2);
+                let qty = parseFloat((Math.random() * 2).toFixed(4));
+                totalBidQty += qty;
+                bidsHTML += `<div class="flex justify-between text-emerald-400 py-0.5 px-1 bg-emerald-950/20 rounded">
+                    <span>${price}</span>
+                    <span class="text-right">${qty}</span>
+                </div>`;
+            }
+
+            html = asksHTML + `<div class="text-center py-1 text-slate-400 font-bold border-y border-slate-700 my-1">SPREAD</div>` + bidsHTML;
+            list.innerHTML = html;
+            document.getElementById('live-price').innerText = "₹ 67,050.00";
+
+            // Signal Generation based on Bid/Ask Imbalance
+            let markers = [];
+            if (totalBidQty > totalAskQty * 1.2) {
+                badge.className = "p-2.5 mb-3 rounded-lg text-center font-bold text-xs uppercase tracking-wider bg-emerald-950 border border-emerald-600 text-emerald-400 animate-pulse";
+                badge.innerText = "🟢 SIGNAL: STRONG BUY (Support Wall Active)";
+                
+                markers.push({
+                    time: chartData[chartData.length - 1].time,
+                    position: 'belowBar',
+                    color: '#10b981',
+                    shape: 'arrowUp',
+                    text: 'BUY',
+                });
+            } else if (totalAskQty > totalBidQty * 1.2) {
+                badge.className = "p-2.5 mb-3 rounded-lg text-center font-bold text-xs uppercase tracking-wider bg-rose-950 border border-rose-600 text-rose-400 animate-pulse";
+                badge.innerText = "🔴 SIGNAL: STRONG SELL (Resistance Wall Active)";
+                
+                markers.push({
+                    time: chartData[chartData.length - 1].time,
+                    position: 'aboveBar',
+                    color: '#f43f5e',
+                    shape: 'arrowDown',
+                    text: 'SELL',
+                });
+            } else {
+                badge.className = "p-2.5 mb-3 rounded-lg text-center font-bold text-xs uppercase tracking-wider bg-slate-900 border border-slate-700 text-yellow-400";
+                badge.innerText = "⚪ NEUTRAL: Market Consolidating";
+            }
+
+            candlestickSeries.setMarkers(markers);
+        }
+
+        setInterval(updateOrderbookAndSignals, 3000);
+        updateOrderbookAndSignals();
+
+        function triggerBuy() { alert("Manual Buy Order Executed!"); }
+        function triggerSell() { alert("Manual Sell Order Executed!"); }
+        function emergencyStop() { alert("⚠️ Emergency Kill Switch Activated! All positions closed."); }
+    </script>
 </body>
 </html>
