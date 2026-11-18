@@ -1,3 +1,4 @@
+import json
 import time
 
 import numpy as np
@@ -63,6 +64,20 @@ def get_book(symbol, depth=100):
     return to_df(res.get("buy", [])), to_df(res.get("sell", []))
 
 
+@st.cache_data(ttl=5)
+def get_context(symbol, res):
+    """ट्रेंड (EMA 20 vs 50) और वॉल्यूम (आख़िरी बंद कैंडल / पिछले 20 का औसत)"""
+    df = get_candles(symbol, res, 120)
+    if len(df) < 55:
+        return None
+    c = df["close"]
+    ema20 = c.ewm(span=20, adjust=False).mean().iloc[-1]
+    ema50 = c.ewm(span=50, adjust=False).mean().iloc[-1]
+    avg = df["volume"].iloc[-22:-2].mean()
+    ratio = float(df["volume"].iloc[-2] / avg) if avg else 1.0
+    return {"trend": "UP" if ema20 > ema50 else "DOWN", "vol_ratio": ratio}
+
+
 # ---------------------------- ज़ोन --------------------------------
 def find_zones(df, mid, bucket_pct, top_n, min_strength, side):
     if df.empty:
@@ -97,25 +112,67 @@ def imbalance(bids, asks, mid, band_pct):
 
 
 # ---------------------------- सिग्नल -------------------------------
-def make_signal(price, buy_z, sell_z, imb, near_pct):
+def make_signal(price, buy_z, sell_z, imb, near_pct,
+                ctx=None, trend_filter=True, min_vol=0.0, min_rr=0.0):
     sup = [z for z in buy_z if z["low"] <= price]
     res = [z for z in sell_z if z["high"] >= price]
     sup = max(sup, key=lambda z: z["high"]) if sup else None
     res = min(res, key=lambda z: z["low"]) if res else None
 
+    cand = None
     if sup and imb >= 0.55:
         dist = max(0.0, (price - sup["high"]) / price * 100)
         if dist <= near_pct:
             sl = sup["low"] * 0.999
             tp = res["low"] if res else price + 2 * (price - sl)
-            return {"type": "BUY", "entry": price, "sl": sl, "tp": tp, "zone": sup}
-    if res and imb <= 0.45:
+            cand = ("BUY", sup, sl, tp)
+    if cand is None and res and imb <= 0.45:
         dist = max(0.0, (res["low"] - price) / price * 100)
         if dist <= near_pct:
             sl = res["high"] * 1.001
             tp = sup["high"] if sup else price - 2 * (sl - price)
-            return {"type": "SELL", "entry": price, "sl": sl, "tp": tp, "zone": res}
-    return {"type": "WAIT"}
+            cand = ("SELL", res, sl, tp)
+    if cand is None:
+        return {"type": "WAIT", "why": ""}
+
+    side, zone, sl, tp = cand
+    risk = abs(price - sl)
+    rr = abs(tp - price) / risk if risk > 0 else 0.0
+    notes, block = [], None
+
+    if ctx:
+        if trend_filter:
+            if (ctx["trend"] == "UP") != (side == "BUY"):
+                block = f"{side} सेटअप है, पर ट्रेंड {'नीचे' if ctx['trend'] == 'DOWN' else 'ऊपर'} है"
+            else:
+                notes.append("ट्रेंड ✔")
+        if not block:
+            if ctx["vol_ratio"] < min_vol:
+                block = f"{side} सेटअप है, पर वॉल्यूम कम ({ctx['vol_ratio']:.1f}x)"
+            else:
+                notes.append(f"वॉल्यूम {ctx['vol_ratio']:.1f}x")
+    if not block and min_rr and rr < min_rr:
+        block = f"{side} सेटअप है, पर रिवॉर्ड:रिस्क कम ({rr:.1f})"
+    if block:
+        return {"type": "WAIT", "why": block}
+
+    notes.append(f"RR {rr:.1f}")
+    return {"type": side, "entry": price, "sl": sl, "tp": tp, "zone": zone, "notes": notes}
+
+
+def beep(kind):
+    """सिग्नल पर आवाज़ + वाइब्रेशन (ब्राउज़र में)"""
+    freqs = [880, 1175] if kind == "BUY" else [660, 440]
+    js = """<script>/*ID*/(function(){try{var P=window.parent;
+    var A=P.AudioContext||P.webkitAudioContext;var c=new A();var t=c.currentTime;
+    FREQS.forEach(function(f,i){var o=c.createOscillator(),g=c.createGain();
+    o.frequency.value=f;o.connect(g);g.connect(c.destination);
+    g.gain.setValueAtTime(0.25,t+i*0.22);
+    g.gain.exponentialRampToValueAtTime(0.001,t+i*0.22+0.2);
+    o.start(t+i*0.22);o.stop(t+i*0.22+0.22);});
+    if(P.navigator.vibrate)P.navigator.vibrate([200,100,200]);}catch(e){}})();</script>"""
+    js = js.replace("FREQS", json.dumps(freqs)).replace("ID", str(time.time()))
+    components.html(js, height=0)
 
 
 def check_breaks(price, prev_price, prev_zones):
@@ -132,7 +189,7 @@ def check_breaks(price, prev_price, prev_zones):
 
 
 # ---------------------------- चार्ट --------------------------------
-def build_chart(df, zones, sig, height, smooth=False, rev="keep"):
+def build_chart(df, zones, sig, height, smooth=False, rev="keep", marks=None):
     if smooth:
         # स्मूथ मोड: क्लोज़ भाव की मुलायम (spline) लाइन
         fig = go.Figure(
@@ -174,6 +231,21 @@ def build_chart(df, zones, sig, height, smooth=False, rev="keep"):
             text=("सपोर्ट " if z["side"] == "buy" else "रेज़िस्टेंस ") + f"{z['strength']:.1f}x",
             font=dict(size=11, color="white"),
         )
+
+    # BUY/SELL मार्कर: जहाँ-जहाँ सिग्नल आया
+    for kind, sym, col in [("BUY", "triangle-up", "#00e676"), ("SELL", "triangle-down", "#ff1744")]:
+        m = [x for x in (marks or []) if x["type"] == kind]
+        if m:
+            fig.add_trace(
+                go.Scatter(
+                    x=[x["time"] for x in m], y=[x["price"] for x in m],
+                    mode="markers+text", text=[kind] * len(m),
+                    textposition="top center" if kind == "BUY" else "bottom center",
+                    textfont=dict(size=10, color=col),
+                    marker=dict(symbol=sym, size=14, color=col, line=dict(width=1, color="white")),
+                    name=kind, hoverinfo="skip",
+                )
+            )
 
     if sig["type"] != "WAIT":
         for name, val, col in [("एंट्री", sig["entry"], "#ffd54f"),
@@ -346,11 +418,17 @@ with st.sidebar:
     n_candles = st.slider("कैंडल की संख्या", 50, 300, 150, 10)
     refresh = st.slider("भाव/सिग्नल रिफ्रेश (सेकंड, 0 = बंद)", 0, 30, 1)
     chart_refresh = st.slider("चार्ट रिफ्रेश (सेकंड)", 2, 60, 10)
+    st.subheader("सिग्नल")
+    sound = st.toggle("🔔 सिग्नल पर आवाज़/वाइब्रेशन", value=True)
+    trend_filter = st.toggle("ट्रेंड फ़िल्टर (EMA 20/50)", value=True)
+    min_vol = st.slider("न्यूनतम वॉल्यूम (औसत का x)", 0.0, 3.0, 0.8, 0.1)
+    min_rr = st.slider("न्यूनतम रिवॉर्ड:रिस्क (0 = बंद)", 0.0, 3.0, 1.2, 0.1)
 
 if not focus:
     st.title(f"📊 {symbol} ऑर्डर बुक ज़ोन")
 
-for key, default in [("prev_zones", []), ("prev_price", None), ("alerts", [])]:
+for key, default in [("prev_zones", []), ("prev_price", None), ("alerts", []),
+                     ("marks", []), ("last_sig", {}), ("sym", None), ("last_beep", 0.0)]:
     if key not in st.session_state:
         st.session_state[key] = default
 
@@ -368,7 +446,11 @@ def book_state():
     buy_z = [z for z in zones if z["side"] == "buy"]
     sell_z = [z for z in zones if z["side"] == "sell"]
     imb = imbalance(bids, asks, mid, band_pct)
-    sig = make_signal(mid, buy_z, sell_z, imb, near_pct)
+    try:
+        ctx = get_context(symbol, tf)
+    except Exception:
+        ctx = None
+    sig = make_signal(mid, buy_z, sell_z, imb, near_pct, ctx, trend_filter, min_vol, min_rr)
     return {"mid": mid, "zones": zones, "imb": imb, "sig": sig}
 
 
@@ -384,6 +466,26 @@ def live_top():
         return
     mid, zones, sig = st_["mid"], st_["zones"], st_["sig"]
 
+    if st.session_state["sym"] != symbol:      # कॉइन बदला: पुराना रेफ़रेंस साफ़
+        st.session_state["sym"] = symbol
+        st.session_state["prev_price"] = None
+        st.session_state["prev_zones"] = []
+
+    # नया सिग्नल आया? → मार्कर + आवाज़
+    last = st.session_state["last_sig"].get(symbol, "WAIT")
+    if sig["type"] != last:
+        st.session_state["last_sig"][symbol] = sig["type"]
+        if sig["type"] != "WAIT":
+            st.session_state["marks"].append(
+                {"symbol": symbol, "time": pd.Timestamp.now(tz="Asia/Kolkata"),
+                 "type": sig["type"], "price": mid}
+            )
+            st.session_state["marks"] = st.session_state["marks"][-40:]
+            st.toast(f"{'🟢' if sig['type'] == 'BUY' else '🔴'} {symbol}: {sig['type']} सिग्नल @ {fmt(mid)}")
+            if sound and time.time() - st.session_state["last_beep"] > 10:
+                st.session_state["last_beep"] = time.time()
+                beep(sig["type"])
+
     stamp = pd.Timestamp.now(tz="Asia/Kolkata").strftime("%H:%M:%S")
     new_alerts = check_breaks(mid, st.session_state["prev_price"], st.session_state["prev_zones"])
     for a in new_alerts:
@@ -395,11 +497,12 @@ def live_top():
 
     price = f"भाव {fmt(mid)}"
     if sig["type"] == "BUY":
-        st.success(f"🟢 BUY  |  {price}  |  SL {fmt(sig['sl'])}  |  TP {fmt(sig['tp'])}")
+        st.success(f"🟢 BUY  |  {price}  |  SL {fmt(sig['sl'])}  |  TP {fmt(sig['tp'])}  |  {' · '.join(sig['notes'])}")
     elif sig["type"] == "SELL":
-        st.error(f"🔴 SELL  |  {price}  |  SL {fmt(sig['sl'])}  |  TP {fmt(sig['tp'])}")
+        st.error(f"🔴 SELL  |  {price}  |  SL {fmt(sig['sl'])}  |  TP {fmt(sig['tp'])}  |  {' · '.join(sig['notes'])}")
     else:
-        st.info(f"⚪ अभी रुकें (WAIT)  |  {price}")
+        why = f"  |  {sig['why']}" if sig.get("why") else ""
+        st.info(f"⚪ अभी रुकें (WAIT)  |  {price}{why}")
     for a in new_alerts:
         st.warning(a)
 
@@ -420,6 +523,7 @@ def live_chart():
         height=900 if full else (780 if focus else 600),
         smooth=smooth,
         rev=f"{symbol}-{tf}-{'s' if smooth else 'c'}",
+        marks=[m for m in st.session_state["marks"] if m["symbol"] == symbol],
     )
     show_chart(fig)
 
