@@ -38,7 +38,7 @@ text{font-family:inherit;fill:var(--tx)}
 <div id="app">
  <div class="bar sp"><h1>Delta लाइव चार्ट</h1>
   <div class="bar"><button id="zi" aria-label="ज़ूम इन">+</button><button id="zo" aria-label="ज़ूम आउट">−</button><button id="rs">रीसेट</button><button id="fsb">फुल स्क्रीन</button></div></div>
- <div class="bar"><div style="position:relative"><input id="sym" value="UNIUSD" aria-label="कॉइन खोजें" placeholder="कॉइन खोजें (BTC, SOL...)" autocomplete="off" autocapitalize="characters"><div id="sg" role="listbox"></div></div><select id="tf" aria-label="टाइमफ्रेम"><option>15m</option><option selected>1h</option><option>4h</option><option>1d</option></select><button id="ld">लोड करें</button></div>
+ <div class="bar"><div style="position:relative"><input id="sym" value="UNIUSD" aria-label="कॉइन खोजें" placeholder="कॉइन खोजें (BTC, SOL...)" autocomplete="off" autocapitalize="characters"><div id="sg" role="listbox"></div></div><select id="tf" aria-label="टाइमफ्रेम"><option>1m</option><option>5m</option><option>10m</option><option>15m</option><option selected>1h</option><option>4h</option><option>1d</option></select><button id="ld">लोड करें</button></div>
  <div class="bar" id="chips" role="group" aria-label="फोकस मोड"><button data-f="all" aria-pressed="true">सब</button><button data-f="ob" aria-pressed="false">OB</button><button data-f="fvg" aria-pressed="false">FVG</button></div>
  <div id="wrap">
   <svg id="s" role="img" aria-label="कैंडल चार्ट"><g id="gr" stroke="var(--grid)" stroke-width=".5"></g><g id="zn"></g><g id="cs"></g></svg>
@@ -52,7 +52,7 @@ text{font-family:inherit;fill:var(--tx)}
 var NS='http://www.w3.org/2000/svg';
 function $(i){return document.getElementById(i)}
 var s=$('s'),cs=$('cs'),zn=$('zn'),gr=$('gr'),app=$('app'),info=$('info'),oh=$('ohlc');
-var SEC={'15m':900,'1h':3600,'4h':14400,'1d':86400};
+var SEC={'1m':60,'5m':300,'10m':600,'15m':900,'1h':3600,'4h':14400,'1d':86400};
 var D=[],Z={},T={all:''},W=400,mn=0,mx=1,sel=null;
 var cx=200,cy=125,w=400,ar=1.6,cur='all',raf=0,P={},ld=0,sd=null;
 function X(i){return 20+i*12}
@@ -99,12 +99,13 @@ function sug(){var q=$('sym').value.trim().toUpperCase(),m=PL.filter(function(x)
 $('sym').addEventListener('input',sug);$('sym').addEventListener('focus',function(){$('sym').select();sug()});
 $('sym').addEventListener('keydown',function(e){if(e.key==='Enter'){sg.style.display='none';$('sym').blur();load()}});
 document.addEventListener('click',function(e){if(!e.target.closest('#sg')&&e.target.id!=='sym')sg.style.display='none'});
+function agg(a){var o=[],m={};a.forEach(function(c){var k=Math.floor(c.t/600)*600,g=m[k];if(!g){g=m[k]={t:k,o:c.o,h:c.h,l:c.l,c:c.c};o.push(g)}else{g.h=Math.max(g.h,c.h);g.l=Math.min(g.l,c.l);g.c=c.c}});return o}
 function load(){
- var sym=($('sym').value.trim()||'UNIUSD').toUpperCase(),tf=$('tf').value,e=Math.floor(Date.now()/1000),st=e-SEC[tf]*70;
+ var sym=($('sym').value.trim()||'UNIUSD').toUpperCase(),tf=$('tf').value,e=Math.floor(Date.now()/1000),st=e-SEC[tf]*70,rs=tf==='10m'?'5m':tf;
  info.textContent='लोड हो रहा है...';
- fetch('https://api.india.delta.exchange/v2/history/candles?symbol='+encodeURIComponent(sym)+'&resolution='+tf+'&start='+st+'&end='+e)
+ fetch('https://api.india.delta.exchange/v2/history/candles?symbol='+encodeURIComponent(sym)+'&resolution='+rs+'&start='+st+'&end='+e)
  .then(function(r){return r.json()}).then(function(j){var a=(j&&j.result)||[];if(!a.length)throw 0;
-  a=a.map(function(c){return{t:+c.time,o:+c.open,h:+c.high,l:+c.low,c:+c.close}}).sort(function(p,q){return p.t-q.t}).slice(-60);render(a,sym+' '+tf+' (लाइव)')})
+  a=a.map(function(c){return{t:+c.time,o:+c.open,h:+c.high,l:+c.low,c:+c.close}}).sort(function(p,q){return p.t-q.t});if(tf==='10m')a=agg(a);a=a.slice(-60);render(a,sym+' '+tf+' (लाइव)')})
  .catch(function(){render(demo(),'डेमो डेटा');info.textContent='लाइव डेटा नहीं आया (सिंबल गलत, नेटवर्क या ब्राउज़र की रोक)। अभी डेमो दिख रहा है।'})}
 function draw(){var h=w/ar;s.setAttribute('viewBox',(cx-w/2)+' '+(cy-h/2)+' '+w+' '+h)}
 function fitW(){return Math.max(W,230*ar)}
