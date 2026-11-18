@@ -44,6 +44,7 @@ def get_candles(symbol, res, n):
     return df.sort_values("time").reset_index(drop=True)
 
 
+@st.cache_data(ttl=1)
 def get_book(symbol, depth=100):
     r = requests.get(f"{BASE}/v2/l2orderbook/{symbol}", params={"depth": depth}, timeout=10)
     r.raise_for_status()
@@ -281,7 +282,8 @@ with st.sidebar:
     band_pct = st.slider("इम्बैलेंस दायरा (± %)", 0.2, 3.0, 1.0, 0.1)
     near_pct = st.slider("सिग्नल के लिए ज़ोन से दूरी (%)", 0.1, 1.5, 0.4, 0.1)
     n_candles = st.slider("कैंडल की संख्या", 50, 300, 150, 10)
-    refresh = st.slider("ऑटो-रिफ्रेश (सेकंड, 0 = बंद)", 0, 30, 1)
+    refresh = st.slider("भाव/सिग्नल रिफ्रेश (सेकंड, 0 = बंद)", 0, 30, 1)
+    chart_refresh = st.slider("चार्ट रिफ्रेश (सेकंड)", 2, 60, 10)
 
 if not focus:
     st.title(f"📊 {symbol} ऑर्डर बुक ज़ोन")
@@ -291,17 +293,11 @@ for key, default in [("prev_zones", []), ("prev_price", None), ("alerts", [])]:
         st.session_state[key] = default
 
 
-def render():
-    try:
-        df = get_candles(symbol, tf, n_candles)
-        bids, asks = get_book(symbol)
-    except Exception as e:
-        st.error(f"डेटा नहीं आया: {e}")
-        return
-    if df.empty or bids.empty or asks.empty:
-        st.warning("इस कॉइन का डेटा अभी खाली है।")
-        return
-
+def book_state():
+    """ऑर्डर बुक से भाव, ज़ोन, इम्बैलेंस और सिग्नल (1 सेकंड कैश)"""
+    bids, asks = get_book(symbol)
+    if bids.empty or asks.empty:
+        return None
     mid = (bids["price"].max() + asks["price"].min()) / 2
     zones = (
         find_zones(bids, mid, bucket_pct, top_n, min_strength, "buy")
@@ -311,8 +307,21 @@ def render():
     sell_z = [z for z in zones if z["side"] == "sell"]
     imb = imbalance(bids, asks, mid, band_pct)
     sig = make_signal(mid, buy_z, sell_z, imb, near_pct)
+    return {"mid": mid, "zones": zones, "imb": imb, "sig": sig}
 
-    # ज़ोन टूटने का अलर्ट
+
+# हर सेकंड: सिर्फ़ भाव + सिग्नल + अलर्ट बदलते हैं, चार्ट नहीं छेड़ा जाता
+def live_top():
+    try:
+        st_ = book_state()
+    except Exception as e:
+        st.error(f"डेटा नहीं आया: {e}")
+        return
+    if not st_:
+        st.warning("इस कॉइन का डेटा अभी खाली है।")
+        return
+    mid, zones, sig = st_["mid"], st_["zones"], st_["sig"]
+
     stamp = pd.Timestamp.now(tz="Asia/Kolkata").strftime("%H:%M:%S")
     new_alerts = check_breaks(mid, st.session_state["prev_price"], st.session_state["prev_zones"])
     for a in new_alerts:
@@ -322,51 +331,71 @@ def render():
     st.session_state["prev_price"] = mid
     st.session_state["prev_zones"] = zones
 
-    # सिग्नल की एक लाइन
+    price = f"भाव {fmt(mid)}"
     if sig["type"] == "BUY":
-        st.success(
-            f"🟢 BUY  |  एंट्री {fmt(sig['entry'])}  |  SL {fmt(sig['sl'])}  |  TP {fmt(sig['tp'])}"
-        )
+        st.success(f"🟢 BUY  |  {price}  |  SL {fmt(sig['sl'])}  |  TP {fmt(sig['tp'])}")
     elif sig["type"] == "SELL":
-        st.error(
-            f"🔴 SELL  |  एंट्री {fmt(sig['entry'])}  |  SL {fmt(sig['sl'])}  |  TP {fmt(sig['tp'])}"
-        )
+        st.error(f"🔴 SELL  |  {price}  |  SL {fmt(sig['sl'])}  |  TP {fmt(sig['tp'])}")
     else:
-        st.info(f"⚪ अभी रुकें (WAIT)  |  भाव {fmt(mid)}")
+        st.info(f"⚪ अभी रुकें (WAIT)  |  {price}")
     for a in new_alerts:
         st.warning(a)
 
+
+# चार्ट अपनी धीमी रफ़्तार से (ताकि हर सेकंड झपकी/रीसेट न हो)
+def live_chart():
+    try:
+        df = get_candles(symbol, tf, n_candles)
+        st_ = book_state()
+    except Exception as e:
+        st.error(f"चार्ट का डेटा नहीं आया: {e}")
+        return
+    if df.empty or not st_:
+        st.warning("इस कॉइन का डेटा अभी खाली है।")
+        return
     fig = build_chart(
-        df, zones, sig,
+        df, st_["zones"], st_["sig"],
         height=900 if full else (780 if focus else 600),
         smooth=smooth,
         rev=f"{symbol}-{tf}-{'s' if smooth else 'c'}",
     )
     show_chart(fig)
 
-    if not focus:
-        st.caption(f"खरीदार {imb*100:.0f}%  vs  बेचने वाले {(1-imb)*100:.0f}%  (भाव के ±{band_pct}% के अंदर)")
-        st.progress(float(imb))
 
-        rows = [
-            {
-                "तरफ़": "सपोर्ट" if z["side"] == "buy" else "रेज़िस्टेंस",
-                "से": fmt(z["low"]),
-                "तक": fmt(z["high"]),
-                "ताक़त (x)": round(z["strength"], 1),
-                "ऑर्डर वैल्यू (USD)": f"{z['notional']:,.0f}",
-            }
-            for z in sorted(zones, key=lambda z: -z["high"])
-        ]
-        if rows:
-            st.dataframe(pd.DataFrame(rows), hide_index=True)
-        with st.expander("🔔 ज़ोन टूटने के अलर्ट (आज का लॉग)"):
-            if st.session_state["alerts"]:
-                for a in st.session_state["alerts"]:
-                    st.write(a)
-            else:
-                st.write("अभी कोई ज़ोन नहीं टूटा।")
-        st.caption(f"आख़िरी अपडेट: {stamp}  •  यह सिर्फ़ सहायक संकेत है, ट्रेड का फ़ैसला आपका।")
+# हर सेकंड: इम्बैलेंस बार, ज़ोन टेबल, अलर्ट लॉग
+def live_bottom():
+    try:
+        st_ = book_state()
+    except Exception:
+        return
+    if not st_:
+        return
+    zones, imb = st_["zones"], st_["imb"]
+    st.caption(f"खरीदार {imb*100:.0f}%  vs  बेचने वाले {(1-imb)*100:.0f}%  (भाव के ±{band_pct}% के अंदर)")
+    st.progress(float(imb))
+    rows = [
+        {
+            "तरफ़": "सपोर्ट" if z["side"] == "buy" else "रेज़िस्टेंस",
+            "से": fmt(z["low"]),
+            "तक": fmt(z["high"]),
+            "ताक़त (x)": round(z["strength"], 1),
+            "ऑर्डर वैल्यू (USD)": f"{z['notional']:,.0f}",
+        }
+        for z in sorted(zones, key=lambda z: -z["high"])
+    ]
+    if rows:
+        st.dataframe(pd.DataFrame(rows), hide_index=True)
+    with st.expander("🔔 ज़ोन टूटने के अलर्ट (आज का लॉग)"):
+        if st.session_state["alerts"]:
+            for a in st.session_state["alerts"]:
+                st.write(a)
+        else:
+            st.write("अभी कोई ज़ोन नहीं टूटा।")
+    st.caption("यह सिर्फ़ सहायक संकेत है, ट्रेड का फ़ैसला आपका।")
 
 
-st.fragment(render, run_every=refresh if refresh > 0 else None)()
+every = refresh if refresh > 0 else None
+st.fragment(live_top, run_every=every)()
+st.fragment(live_chart, run_every=chart_refresh)()
+if not focus:
+    st.fragment(live_bottom, run_every=every)()
