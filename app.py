@@ -326,7 +326,9 @@ def check_breaks(price, prev_price, prev_zones):
 CHART_HTML = r"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <style>
-html,body{margin:0;height:100%;background:#131722;overflow:hidden;
+:root{--bg:#131722;--fg:#d1d4dc;--mut:#787b86;--btnbg:rgba(30,34,45,.92);--btnbd:#363a45;--zt:#fff;}
+.lt{--bg:#ffffff;--fg:#131722;--mut:#6a6d78;--btnbg:rgba(240,243,250,.95);--btnbd:#d0d3dc;--zt:#131722;}
+html,body{margin:0;height:100%;background:var(--bg);overflow:hidden;
  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
  -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;}
 #wrap{position:relative;width:100%;height:100%;}
@@ -334,11 +336,11 @@ html,body{margin:0;height:100%;background:#131722;overflow:hidden;
 #c{position:absolute;left:0;top:0;right:0;bottom:0;z-index:2;}
 .z{position:absolute;left:0;display:none;box-sizing:border-box;z-index:1;}
 #dp{position:absolute;left:0;top:0;z-index:2;pointer-events:none;}
-.z span{position:absolute;left:6px;top:1px;font-size:11px;color:#fff;opacity:.92;white-space:nowrap;}
-#lg{position:absolute;left:8px;top:6px;z-index:5;color:#d1d4dc;font-size:12px;
- pointer-events:none;line-height:1.4;text-shadow:0 0 3px #131722;}
+.z span{position:absolute;left:6px;top:1px;font-size:11px;color:var(--zt);opacity:.92;white-space:nowrap;}
+#lg{position:absolute;left:8px;top:6px;z-index:5;color:var(--fg);font-size:12px;
+ pointer-events:none;line-height:1.4;text-shadow:0 0 3px var(--bg);}
 #rs{position:absolute;left:8px;bottom:34px;z-index:5;width:34px;height:34px;border-radius:17px;
- border:1px solid #363a45;background:rgba(30,34,45,.92);color:#d1d4dc;font-size:17px;padding:0;}
+ border:1px solid var(--btnbd);background:var(--btnbg);color:var(--fg);font-size:17px;padding:0;}
 #msg{position:absolute;left:0;top:0;right:0;bottom:0;display:none;align-items:center;
  justify-content:center;color:#ef9a9a;z-index:9;font-size:14px;text-align:center;padding:20px;}
 </style></head><body>
@@ -355,14 +357,22 @@ html,body{margin:0;height:100%;background:#131722;overflow:hidden;
   if (!window.LightweightCharts) { fail('चार्ट लाइब्रेरी लोड नहीं हुई — इंटरनेट/ब्लॉकर जाँचें'); return; }
   try { void P.document; } catch (e) { fail('चार्ट को डेटा नहीं मिल पा रहा (ब्राउज़र ने रोका)'); return; }
 
+  function lum(c) { var m = (c || '').match(/\d+/g); return m ? 0.299 * m[0] + 0.587 * m[1] + 0.114 * m[2] : 0; }
+  var sysDark = true;
+  try { sysDark = lum(P.getComputedStyle(P.document.querySelector('.stApp')).backgroundColor) < 128; } catch (e) {}
+  var LIGHT = __LIGHT__ || !sysDark;            // लाइट बटन दबा हो या फ़ोन/ब्राउज़र की थीम लाइट हो
+  if (LIGHT) document.documentElement.className = 'lt';
+
   var chart = LightweightCharts.createChart(el, {
     width: el.clientWidth, height: el.clientHeight,
-    layout: { background: { type: 'solid', color: 'rgba(0,0,0,0)' }, textColor: '#b2b5be', fontSize: 12 },
-    grid: { vertLines: { color: 'rgba(42,46,57,.55)' }, horzLines: { color: 'rgba(42,46,57,.55)' } },
-    crosshair: { mode: 0, vertLine: { color: '#758696', labelBackgroundColor: '#2a2e39' },
-                 horzLine: { color: '#758696', labelBackgroundColor: '#2a2e39' } },
-    rightPriceScale: { borderColor: '#2a2e39', scaleMargins: { top: .12, bottom: .12 } },
-    timeScale: { borderColor: '#2a2e39', timeVisible: true, secondsVisible: false,
+    layout: { background: { type: 'solid', color: 'rgba(0,0,0,0)' }, textColor: LIGHT ? '#131722' : '#b2b5be', fontSize: 12 },
+    grid: { vertLines: { color: LIGHT ? 'rgba(42,46,57,.08)' : 'rgba(42,46,57,.55)' },
+            horzLines: { color: LIGHT ? 'rgba(42,46,57,.08)' : 'rgba(42,46,57,.55)' } },
+    crosshair: { mode: 0,
+      vertLine: { color: LIGHT ? '#9598a1' : '#758696', labelBackgroundColor: LIGHT ? '#4c525e' : '#2a2e39' },
+      horzLine: { color: LIGHT ? '#9598a1' : '#758696', labelBackgroundColor: LIGHT ? '#4c525e' : '#2a2e39' } },
+    rightPriceScale: { borderColor: LIGHT ? '#d6dae3' : '#2a2e39', scaleMargins: { top: .12, bottom: .12 } },
+    timeScale: { borderColor: LIGHT ? '#d6dae3' : '#2a2e39', timeVisible: true, secondsVisible: false,
                  rightOffset: 8, barSpacing: 9, minBarSpacing: 1.5 },
     handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
     handleScale: { axisPressedMouseMove: { time: true, price: true }, mouseWheel: true, pinch: true },
@@ -372,8 +382,9 @@ html,body{margin:0;height:100%;background:#131722;overflow:hidden;
 
   var series;
   if (SMOOTH) {
-    series = chart.addAreaSeries({ lineColor: '#4fc3f7', topColor: 'rgba(79,195,247,.28)',
-      bottomColor: 'rgba(79,195,247,0)', lineWidth: 2, lineType: 2, crosshairMarkerRadius: 4 });
+    series = chart.addAreaSeries({ lineColor: LIGHT ? '#2962ff' : '#4fc3f7',
+      topColor: LIGHT ? 'rgba(41,98,255,.25)' : 'rgba(79,195,247,.28)',
+      bottomColor: LIGHT ? 'rgba(41,98,255,0)' : 'rgba(79,195,247,0)', lineWidth: 2, lineType: 2, crosshairMarkerRadius: 4 });
   } else {
     series = chart.addCandlestickSeries({ upColor: '#26a69a', downColor: '#ef5350',
       borderUpColor: '#26a69a', borderDownColor: '#ef5350',
@@ -420,7 +431,7 @@ html,body{margin:0;height:100%;background:#131722;overflow:hidden;
   var DEP = null;
   function hint() {
     return (DEP && DEP.rows && DEP.rows.length)
-      ? '<br><span style="color:#787b86;font-size:10px">हरा/लाल बार = पेंडिंग BUY/SELL ऑर्डर</span>' : '';
+      ? '<br><span style="color:var(--mut);font-size:10px">हरा/लाल बार = पेंडिंग BUY/SELL ऑर्डर</span>' : '';
   }
   function showLegend(b) {
     if (!b) { lg.innerHTML = '<b>' + label + '</b>' + hint(); return; }
@@ -563,8 +574,9 @@ html,body{margin:0;height:100%;background:#131722;overflow:hidden;
 """
 
 
-def chart_html(smooth):
-    return CHART_HTML.replace("__SMOOTH__", "true" if smooth else "false")
+def chart_html(smooth, light):
+    return (CHART_HTML.replace("__SMOOTH__", "true" if smooth else "false")
+            .replace("__LIGHT__", "true" if light else "false"))
 
 
 # ---------------------------- UI ----------------------------------
@@ -577,17 +589,40 @@ c1, c2 = st.columns(2)
 symbol = c1.selectbox("कॉइन", COINS, label_visibility="collapsed")
 tf = c2.selectbox("टाइमफ्रेम", list(TF), index=1, label_visibility="collapsed")
 
-MODES = ["🎯 फ़ोकस", "⛶ फुल", "〰️ स्मूथ", "💥 LQ", "📶 ऑर्डर बार"]
+MODES = ["🎯 फ़ोकस", "⛶ फुल", "〰️ स्मूथ", "💥 LQ", "📶 ऑर्डर बार", "☀️ लाइट"]
 if hasattr(st, "pills"):
-    picked = st.pills("मोड", MODES, selection_mode="multi", default=MODES[3:], label_visibility="collapsed")
+    picked = st.pills("मोड", MODES, selection_mode="multi", default=MODES[3:5], label_visibility="collapsed")
 else:
-    picked = st.multiselect("मोड", MODES, default=MODES[3:], label_visibility="collapsed")
+    picked = st.multiselect("मोड", MODES, default=MODES[3:5], label_visibility="collapsed")
 picked = picked or []
 full = MODES[1] in picked
 focus = MODES[0] in picked or full      # फुल में फ़ोकस अपने-आप शामिल
 smooth = MODES[2] in picked
 show_liq = MODES[3] in picked          # अनुमानित लिक्विडेशन ज़ोन
 show_depth = MODES[4] in picked        # पेंडिंग BUY/SELL ऑर्डर के बार
+light = MODES[5] in picked             # लाइट मोड
+
+# लाइट मोड: पेज डार्क हो तो रंग उलट देते हैं (चार्ट अपनी लाइट थीम ख़ुद बनाता है, उसे दोबारा उलटकर सीधा रखते हैं)
+components.html(
+    """
+    <script>
+    (function () {
+      var want = __WANT__, P = window.parent, d = P.document;
+      var old = d.getElementById('lm-style'); if (old) old.remove();
+      if (!want) return;
+      var app = d.querySelector('.stApp'); if (!app) return;
+      var bg = P.getComputedStyle(app).backgroundColor, m = bg.match(/\\d+/g) || [0, 0, 0];
+      var dark = (0.299 * m[0] + 0.587 * m[1] + 0.114 * m[2]) < 128;
+      if (!dark) return;                       // पेज पहले से लाइट है
+      var st = d.createElement('style'); st.id = 'lm-style';
+      st.textContent = 'html{background:' + bg + ';filter:invert(1) hue-rotate(180deg);}' +
+                       'iframe{filter:invert(1) hue-rotate(180deg);}';
+      d.head.appendChild(st);
+    })();
+    </script>
+    """.replace("__WANT__", "true" if light else "false"),
+    height=0,
+)
 
 # छिपे (0 ऊँचाई वाले) डेटा-कंपोनेंट जगह न घेरें
 st.markdown(
@@ -848,7 +883,7 @@ def live_bottom():
 every = refresh if refresh > 0 else None
 st.fragment(live_top, run_every=every)()
 chart_h = 900 if full else (780 if focus else 600)
-components.html(chart_html(smooth), height=chart_h)      # चार्ट एक बार बनता है, बार-बार नहीं
+components.html(chart_html(smooth, light), height=chart_h)      # चार्ट एक बार बनता है, बार-बार नहीं
 st.fragment(live_feed, run_every=every)()                # और डेटा हर सेकंड पहुँचता है
 if not focus:
     st.fragment(live_bottom, run_every=every)()
