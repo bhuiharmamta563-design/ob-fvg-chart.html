@@ -259,6 +259,56 @@ def derivs_info(symbol, funding_thr):
             "oi_val": oi_val, "oi_pct": oi_pct, "mv": mv, "read": read}
 
 
+def liq_levels(df, price, top=2, bin_pct=0.15):
+    """अनुमानित लिक्विडेशन ज़ोन.
+    हर कैंडल को 'एंट्री' मानकर 10x/25x/50x/100x लीवरेज के लिक्विडेशन भाव निकालते हैं,
+    वॉल्यूम से वज़न देते हैं, और सिर्फ़ वही रखते हैं जिन्हें भाव बाद में छुआ नहीं।
+    यह असली लिक्विडेशन डेटा नहीं, सिर्फ़ अनुमान है।"""
+    n = len(df)
+    if n < 20 or not price:
+        return []
+    hi, lo = df["high"].to_numpy(), df["low"].to_numpy()
+    vol = df["volume"].to_numpy()
+    typ = (hi + lo + df["close"].to_numpy()) / 3
+    min_after = np.append(np.minimum.accumulate(lo[::-1])[::-1][1:], np.inf)
+    max_after = np.append(np.maximum.accumulate(hi[::-1])[::-1][1:], -np.inf)
+    width = price * bin_pct / 100
+    mm = 0.005                       # मेंटेनेंस मार्जिन (मोटा अनुमान)
+    acc = {"long": {}, "short": {}}
+    for L, w in [(10, 0.35), (25, 0.30), (50, 0.20), (100, 0.15)]:
+        long_p = typ * (1 - 1 / L + mm)
+        short_p = typ * (1 + 1 / L - mm)
+        ok_l = (long_p < price) & (long_p < min_after)
+        ok_s = (short_p > price) & (short_p > max_after)
+        for side, arr, ok in (("long", long_p, ok_l), ("short", short_p, ok_s)):
+            for p, v in zip(arr[ok], vol[ok]):
+                k = int(round(p / width))
+                acc[side][k] = acc[side].get(k, 0.0) + float(v) * w
+    out = []
+    for side, d in acc.items():
+        if not d:
+            continue
+        mean = sum(d.values()) / len(d)
+        for k, wgt in sorted(d.items(), key=lambda kv: -kv[1])[:top]:
+            strength = wgt / mean if mean else 1.0
+            if strength >= 1.3:
+                out.append({"side": "liq_" + side, "price": k * width, "strength": strength})
+    return out
+
+
+def depth_profile(bids, asks, mid, step_pct=0.05, keep=120):
+    """ऑर्डर बुक को छोटे भाव-डिब्बों में बाँटो: कहाँ कितने BUY (0) और SELL (1) ऑर्डर पड़े हैं"""
+    step = mid * step_pct / 100
+    rows = []
+    for d, side in ((bids, 0), (asks, 1)):
+        if d.empty:
+            continue
+        g = d.groupby((d["price"] / step).round().astype(int))["notional"].sum()
+        rows += [[float(k * step), float(v), side] for k, v in g.items()]
+    rows = sorted(rows, key=lambda r: -r[1])[:keep]
+    return {"step": step, "rows": rows}
+
+
 def check_breaks(price, prev_price, prev_zones):
     out = []
     if prev_price is None:
@@ -282,7 +332,8 @@ html,body{margin:0;height:100%;background:#131722;overflow:hidden;
 #wrap{position:relative;width:100%;height:100%;}
 #zones{position:absolute;left:0;top:0;right:0;bottom:0;pointer-events:none;overflow:hidden;z-index:1;}
 #c{position:absolute;left:0;top:0;right:0;bottom:0;z-index:2;}
-.z{position:absolute;left:0;display:none;box-sizing:border-box;}
+.z{position:absolute;left:0;display:none;box-sizing:border-box;z-index:1;}
+#dp{position:absolute;left:0;top:0;z-index:2;pointer-events:none;}
 .z span{position:absolute;left:6px;top:1px;font-size:11px;color:#fff;opacity:.92;white-space:nowrap;}
 #lg{position:absolute;left:8px;top:6px;z-index:5;color:#d1d4dc;font-size:12px;
  pointer-events:none;line-height:1.4;text-shadow:0 0 3px #131722;}
@@ -366,14 +417,19 @@ html,body{margin:0;height:100%;background:#131722;overflow:hidden;
   // ---- लेजेंड (OHLC) ----
   var prec = 2, label = '', lastBar = null, hovering = false;
   function fx(v) { return Number(v).toFixed(prec); }
+  var DEP = null;
+  function hint() {
+    return (DEP && DEP.rows && DEP.rows.length)
+      ? '<br><span style="color:#787b86;font-size:10px">हरा/लाल बार = पेंडिंग BUY/SELL ऑर्डर</span>' : '';
+  }
   function showLegend(b) {
-    if (!b) { lg.innerHTML = '<b>' + label + '</b>'; return; }
+    if (!b) { lg.innerHTML = '<b>' + label + '</b>' + hint(); return; }
     if (b.open !== undefined) {
       var col = b.close >= b.open ? '#26a69a' : '#ef5350';
       lg.innerHTML = '<b>' + label + '</b><br><span style="color:' + col + '">O ' + fx(b.open) +
-        '&nbsp; H ' + fx(b.high) + '&nbsp; L ' + fx(b.low) + '&nbsp; C ' + fx(b.close) + '</span>';
+        '&nbsp; H ' + fx(b.high) + '&nbsp; L ' + fx(b.low) + '&nbsp; C ' + fx(b.close) + '</span>' + hint();
     } else {
-      lg.innerHTML = '<b>' + label + '</b><br>' + fx(b.value);
+      lg.innerHTML = '<b>' + label + '</b><br>' + fx(b.value) + hint();
     }
   }
   chart.subscribeCrosshairMove(function (p) {
@@ -389,15 +445,47 @@ html,body{margin:0;height:100%;background:#131722;overflow:hidden;
       d.appendChild(document.createElement('span')); zl.appendChild(d); zEls.push(d); }
     while (zEls.length > zs.length) { zl.removeChild(zEls.pop()); }
     zs.forEach(function (z, i) {
-      var buy = z.side === 'buy', a = Math.min(0.12 + 0.04 * z.strength, 0.4), e = zEls[i];
-      var rgb = buy ? '0,200,120' : '240,70,70';
+      var e = zEls[i], rgb, a, txt, dash = false;
+      if (z.side === 'buy' || z.side === 'sell') {            // RS = सपोर्ट / रेज़िस्टेंस (ऑर्डर बुक की दीवार)
+        rgb = z.side === 'buy' ? '0,200,120' : '240,70,70';
+        a = Math.min(0.12 + 0.04 * z.strength, 0.4);
+        txt = 'RS ' + z.strength.toFixed(1) + 'x';
+      } else {                                                 // LQ = अनुमानित लिक्विडेशन
+        var isLong = z.side === 'liq_long';
+        rgb = isLong ? '255,167,38' : '206,147,216';
+        a = Math.min(0.10 + 0.05 * z.strength, 0.4); dash = true;
+        txt = 'LQ ' + (isLong ? 'लॉन्ग' : 'शॉर्ट') + ' ' + z.strength.toFixed(1) + 'x';
+      }
       e.style.background = 'rgba(' + rgb + ',' + a + ')';
-      e.style.borderTop = e.style.borderBottom = '1px solid rgba(' + rgb + ',.65)';
-      e.firstChild.textContent = (buy ? 'सपोर्ट ' : 'रेज़िस्टेंस ') + z.strength.toFixed(1) + 'x';
+      e.style.borderTop = e.style.borderBottom = '1px ' + (dash ? 'dashed' : 'solid') + ' rgba(' + rgb + ',.8)';
+      e.firstChild.textContent = txt;
+      e.firstChild.style.left = dash ? '38%' : '6px';
+    });
+  }
+  // पेंडिंग ऑर्डर के बार (दाईं किनारी से बाईं ओर), चार्ट के पीछे
+  var dpc = document.createElement('canvas'); dpc.id = 'dp'; zl.appendChild(dpc);
+  var dctx = dpc.getContext('2d');
+  function drawDepth(w) {
+    var dpr = window.devicePixelRatio || 1, cw = zl.clientWidth, ch = zl.clientHeight;
+    if (dpc.width !== Math.round(cw * dpr) || dpc.height !== Math.round(ch * dpr)) {
+      dpc.width = Math.round(cw * dpr); dpc.height = Math.round(ch * dpr);
+      dpc.style.width = cw + 'px'; dpc.style.height = ch + 'px';
+    }
+    dctx.setTransform(dpr, 0, 0, dpr, 0, 0); dctx.clearRect(0, 0, cw, ch);
+    if (!DEP || !DEP.rows || !DEP.rows.length) return;
+    var mx = 0; DEP.rows.forEach(function (r) { if (r[1] > mx) mx = r[1]; });
+    var maxW = w * 0.28, half = DEP.step / 2;
+    DEP.rows.forEach(function (r) {
+      var y1 = series.priceToCoordinate(r[0] + half), y2 = series.priceToCoordinate(r[0] - half);
+      if (y1 === null || y2 === null) return;
+      var bw = Math.max(2, Math.sqrt(r[1] / mx) * maxW);
+      dctx.fillStyle = r[2] === 0 ? 'rgba(38,166,154,.5)' : 'rgba(239,83,80,.5)';
+      dctx.fillRect(w - bw, Math.min(y1, y2), bw, Math.max(1, Math.abs(y2 - y1) - 0.5));
     });
   }
   function frame() {
     var w = chart.timeScale().width();
+    drawDepth(w);
     for (var i = 0; i < Z.length; i++) {
       var e = zEls[i]; if (!e) continue;
       var y1 = series.priceToCoordinate(Z[i].high), y2 = series.priceToCoordinate(Z[i].low);
@@ -459,6 +547,7 @@ html,body{margin:0;height:100%;background:#131722;overflow:hidden;
     cur.lastT = data[data.length - 1].time;
     lastBar = data[data.length - 1];
     if (!hovering) showLegend(lastBar);
+    DEP = d.depth || null;
     setZones(d.zones || []); setLines(d.sig); setMarks(d.marks || []);
   }
   document.getElementById('rs').addEventListener('click', function () { yZoom = 1; refreshScale(); showDefault(); });
@@ -488,15 +577,17 @@ c1, c2 = st.columns(2)
 symbol = c1.selectbox("कॉइन", COINS, label_visibility="collapsed")
 tf = c2.selectbox("टाइमफ्रेम", list(TF), index=1, label_visibility="collapsed")
 
-MODES = ["🎯 फ़ोकस", "⛶ फुल", "〰️ स्मूथ"]
+MODES = ["🎯 फ़ोकस", "⛶ फुल", "〰️ स्मूथ", "💥 LQ", "📶 ऑर्डर बार"]
 if hasattr(st, "pills"):
-    picked = st.pills("मोड", MODES, selection_mode="multi", label_visibility="collapsed")
+    picked = st.pills("मोड", MODES, selection_mode="multi", default=MODES[3:], label_visibility="collapsed")
 else:
-    picked = st.multiselect("मोड", MODES, label_visibility="collapsed")
+    picked = st.multiselect("मोड", MODES, default=MODES[3:], label_visibility="collapsed")
 picked = picked or []
 full = MODES[1] in picked
 focus = MODES[0] in picked or full      # फुल में फ़ोकस अपने-आप शामिल
 smooth = MODES[2] in picked
+show_liq = MODES[3] in picked          # अनुमानित लिक्विडेशन ज़ोन
+show_depth = MODES[4] in picked        # पेंडिंग BUY/SELL ऑर्डर के बार
 
 # छिपे (0 ऊँचाई वाले) डेटा-कंपोनेंट जगह न घेरें
 st.markdown(
@@ -536,8 +627,7 @@ if full:
         height=48,
     )
 
-with st.sidebar:
-    st.header("सेटिंग")
+with st.expander("⚙️ सेटिंग (ज़ोन, सिग्नल, साइज़)"):
     bucket_pct = st.slider("ज़ोन की चौड़ाई (%)", 0.05, 1.0, 0.20, 0.05)
     top_n = st.slider("हर तरफ़ कितने ज़ोन", 1, 6, 3)
     min_strength = st.slider("न्यूनतम ताक़त (x)", 1.0, 5.0, 1.5, 0.1)
@@ -582,7 +672,8 @@ def book_state():
         ctx = None
     sig = make_signal(mid, buy_z, sell_z, imb, near_pct, ctx, trend_filter, min_vol, min_rr)
     liq = liquidity_info(bids, asks, mid, trade_usd)
-    return {"mid": mid, "zones": zones, "imb": imb, "sig": sig, "liq": liq}
+    depth = depth_profile(bids, asks, mid)
+    return {"mid": mid, "zones": zones, "imb": imb, "sig": sig, "liq": liq, "depth": depth}
 
 
 # हर सेकंड: सिर्फ़ भाव + सिग्नल + अलर्ट बदलते हैं, चार्ट नहीं छेड़ा जाता
@@ -665,6 +756,13 @@ def live_feed():
         return
     df = df.drop_duplicates("time")
     mid, sig = st_["mid"], st_["sig"]
+    lq_zones = []
+    if show_liq:
+        lq_zones = [
+            {"side": l["side"], "low": l["price"] * 0.9996, "high": l["price"] * 1.0004,
+             "strength": l["strength"]}
+            for l in liq_levels(df, mid)
+        ]
     payload = {
         "key": f"{symbol}|{tf}",
         "label": f"{symbol} · {tf}",
@@ -674,7 +772,8 @@ def live_feed():
             for t, o, h, l, c in zip(df["time"], df["open"], df["high"], df["low"], df["close"])
         ],
         "zones": [{"side": z["side"], "low": z["low"], "high": z["high"], "strength": z["strength"]}
-                  for z in st_["zones"]],
+                  for z in st_["zones"]] + lq_zones,
+        "depth": st_["depth"] if show_depth else None,
         "sig": {k: sig.get(k) for k in ("type", "entry", "sl", "tp")},
         "marks": [{"time": int(m["time"].timestamp()), "type": m["type"]}
                   for m in st.session_state["marks"] if m["symbol"] == symbol],
