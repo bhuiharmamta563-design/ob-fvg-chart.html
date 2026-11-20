@@ -327,6 +327,13 @@ def depth_profile(bids, asks, mid, step_pct=0.05, keep=120):
     return {"step": step, "rows": rows}
 
 
+def _json_default(o):
+    """numpy के bool/int/float जैसे प्रकार JSON में भेजने लायक बनाओ"""
+    if hasattr(o, "item"):
+        return o.item()
+    return str(o)
+
+
 def smc_analyze(df, n=3):
     """Smart Money Concepts: स्विंग (HH/HL/LH/LL), BOS/CHoCH, Order Block, FVG,
     Liquidity Sweep, Premium/Discount. नियम सरल हैं, इसलिए इसे सहायक संकेत मानें।"""
@@ -482,7 +489,7 @@ def smc_setup(smc, price):
     if not cand:
         return None
     z = min(cand, key=lambda c: (c[0], c[1]))[2]
-    in_zone = z["low"] <= price <= z["high"]
+    in_zone = bool(z["low"] <= price <= z["high"])
     entry = price if in_zone else (z["low"] + z["high"]) / 2
     buf = price * 0.001
     sl = z["low"] - buf if long_ else z["high"] + buf
@@ -1132,7 +1139,7 @@ def live_feed():
         "marks": [{"time": int(m["time"].timestamp()), "type": m["type"]}
                   for m in st.session_state["marks"] if m["symbol"] == symbol],
     }
-    data = json.dumps(payload).replace("</", "<\\/")
+    data = json.dumps(payload, default=_json_default).replace("</", "<\\/")
     components.html(
         f"<script>var P=window.parent;P.__lwData={data};P.__lwVer=(P.__lwVer||0)+1;</script>",
         height=0,
