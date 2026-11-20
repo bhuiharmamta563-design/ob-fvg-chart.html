@@ -309,6 +309,130 @@ def depth_profile(bids, asks, mid, step_pct=0.05, keep=120):
     return {"step": step, "rows": rows}
 
 
+def smc_analyze(df, n=3):
+    """Smart Money Concepts: स्विंग (HH/HL/LH/LL), BOS/CHoCH, Order Block, FVG,
+    Liquidity Sweep, Premium/Discount. नियम सरल हैं, इसलिए इसे सहायक संकेत मानें।"""
+    N = len(df)
+    if N < 30:
+        return None
+    hi, lo = df["high"].to_numpy(), df["low"].to_numpy()
+    op, cl = df["open"].to_numpy(), df["close"].to_numpy()
+    ts = [int(t.timestamp()) for t in df["time"]]
+
+    # 1) स्विंग हाई/लो (n कैंडल दाएँ-बाएँ से ऊँचा/नीचा)
+    piv = []
+    for i in range(n, N - n):
+        wh, wl = hi[i - n:i + n + 1], lo[i - n:i + n + 1]
+        if hi[i] == wh.max() and (wh == hi[i]).sum() == 1:
+            piv.append({"i": i, "p": float(hi[i]), "k": "H", "conf": i + n, "done": False})
+        if lo[i] == wl.min() and (wl == lo[i]).sum() == 1:
+            piv.append({"i": i, "p": float(lo[i]), "k": "L", "conf": i + n, "done": False})
+    piv.sort(key=lambda x: (x["conf"], x["i"]))
+
+    # 2) कैंडल-दर-कैंडल: BOS / CHoCH, Order Block, Liquidity Sweep
+    events, sweeps, obs = [], [], []
+    trend, nxt = 0, 0
+    act = {"H": [], "L": []}
+    for k in range(n, N):
+        while nxt < len(piv) and piv[nxt]["conf"] <= k:
+            pv = piv[nxt]
+            act[pv["k"]] = (act[pv["k"]] + [pv])[-8:]
+            nxt += 1
+        for kind in ("H", "L"):
+            lst = act[kind]
+            if not lst or lst[-1]["done"]:
+                continue
+            pv = lst[-1]
+            if kind == "H" and cl[k] > pv["p"]:
+                typ = "CHoCH" if trend == -1 else "BOS"
+                pv["done"], trend = True, 1
+                events.append({"type": typ, "dir": "up", "level": pv["p"],
+                               "t0": ts[pv["i"]], "t1": ts[k]})
+                if act["L"]:                              # तेज़ी से पहले की आख़िरी लाल कैंडल
+                    s0 = act["L"][-1]["i"]
+                    for j in range(s0, max(s0 - 4, -1), -1):
+                        if cl[j] < op[j]:
+                            obs.append({"dir": "up", "low": float(lo[j]), "high": float(hi[j]), "j": j, "k": k})
+                            break
+            elif kind == "L" and cl[k] < pv["p"]:
+                typ = "CHoCH" if trend == 1 else "BOS"
+                pv["done"], trend = True, -1
+                events.append({"type": typ, "dir": "down", "level": pv["p"],
+                               "t0": ts[pv["i"]], "t1": ts[k]})
+                if act["H"]:                              # गिरावट से पहले की आख़िरी हरी कैंडल
+                    s0 = act["H"][-1]["i"]
+                    for j in range(s0, max(s0 - 4, -1), -1):
+                        if cl[j] > op[j]:
+                            obs.append({"dir": "down", "low": float(lo[j]), "high": float(hi[j]), "j": j, "k": k})
+                            break
+        for pv in act["H"]:                               # ऊपर की लिक्विडिटी स्वीप
+            if pv["done"]:
+                continue
+            if cl[k] > pv["p"]:
+                pv["done"] = True
+            elif hi[k] > pv["p"]:
+                pv["done"] = True
+                sweeps.append({"dir": "bsl", "level": pv["p"], "t0": ts[pv["i"]], "t1": ts[k]})
+        for pv in act["L"]:                               # नीचे की लिक्विडिटी स्वीप
+            if pv["done"]:
+                continue
+            if cl[k] < pv["p"]:
+                pv["done"] = True
+            elif lo[k] < pv["p"]:
+                pv["done"] = True
+                sweeps.append({"dir": "ssl", "level": pv["p"], "t0": ts[pv["i"]], "t1": ts[k]})
+
+    # 3) HH / HL / LH / LL लेबल
+    labels, prev = [], {"H": None, "L": None}
+    for pv in sorted(piv, key=lambda x: x["i"]):
+        q = prev[pv["k"]]
+        if q is not None:
+            if pv["k"] == "H":
+                lab = "HH" if pv["p"] > q else "LH"
+            else:
+                lab = "HL" if pv["p"] > q else "LL"
+            labels.append({"t": ts[pv["i"]], "k": pv["k"], "l": lab})
+        prev[pv["k"]] = pv["p"]
+
+    # 4) Order Block: जिन्हें भाव ने बंद होकर पार नहीं किया
+    ob_out = []
+    for o in obs:
+        later = cl[o["k"] + 1:]
+        gone = (later < o["low"]).any() if o["dir"] == "up" else (later > o["high"]).any()
+        if not gone:
+            ob_out.append({"dir": o["dir"], "low": o["low"], "high": o["high"], "t0": ts[o["j"]]})
+    ob_out = [o for d in ("up", "down") for o in [x for x in ob_out if x["dir"] == d][-2:]]
+
+    # 5) Fair Value Gap: अब तक भरे नहीं गए हिस्से
+    fvg, thr = [], 0.0003
+    for i in range(2, N):
+        if lo[i] > hi[i - 2] and (lo[i] - hi[i - 2]) / cl[i] >= thr:
+            bot, top = hi[i - 2], lo[i]
+            if i + 1 < N:
+                top = min(top, lo[i + 1:].min())
+            if top > bot:
+                fvg.append({"dir": "up", "low": float(bot), "high": float(top), "t0": ts[i - 1]})
+        elif hi[i] < lo[i - 2] and (lo[i - 2] - hi[i]) / cl[i] >= thr:
+            top, bot = lo[i - 2], hi[i]
+            if i + 1 < N:
+                bot = max(bot, hi[i + 1:].max())
+            if top > bot:
+                fvg.append({"dir": "down", "low": float(bot), "high": float(top), "t0": ts[i - 1]})
+    fvg = [f for d in ("up", "down") for f in [x for x in fvg if x["dir"] == d][-3:]]
+
+    # 6) Premium / Discount: आख़िरी स्विंग रेंज का 50%
+    pd_ = None
+    Hs = [p for p in piv if p["k"] == "H"]
+    Ls = [p for p in piv if p["k"] == "L"]
+    if Hs and Ls and Hs[-1]["p"] > Ls[-1]["p"]:
+        h_, l_ = Hs[-1], Ls[-1]
+        pd_ = {"hi": h_["p"], "lo": l_["p"], "eq": (h_["p"] + l_["p"]) / 2,
+               "t0": ts[min(h_["i"], l_["i"])]}
+
+    return {"swings": labels[-10:], "events": events[-6:], "sweeps": sweeps[-4:],
+            "pd": pd_, "bias": trend, "fvg": fvg, "ob": ob_out}
+
+
 def check_breaks(price, prev_price, prev_zones):
     out = []
     if prev_price is None:
@@ -430,8 +554,15 @@ html,body{margin:0;height:100%;background:var(--bg);overflow:hidden;
   function fx(v) { return Number(v).toFixed(prec); }
   var DEP = null;
   function hint() {
-    return (DEP && DEP.rows && DEP.rows.length)
-      ? '<br><span style="color:var(--mut);font-size:10px">हरा/लाल बार = पेंडिंग BUY/SELL ऑर्डर</span>' : '';
+    var h = '';
+    if (SM && SM.bias !== undefined) {
+      h += '<br><span style="color:var(--mut);font-size:10px">SMC बायस: ' +
+           (SM.bias > 0 ? 'बुलिश 🟢' : SM.bias < 0 ? 'बेयरिश 🔴' : 'न्यूट्रल') + '</span>';
+    }
+    if (DEP && DEP.rows && DEP.rows.length) {
+      h += '<br><span style="color:var(--mut);font-size:10px">हरा/लाल बार = पेंडिंग BUY/SELL ऑर्डर</span>';
+    }
+    return h;
   }
   function showLegend(b) {
     if (!b) { lg.innerHTML = '<b>' + label + '</b>' + hint(); return; }
@@ -455,27 +586,36 @@ html,body{margin:0;height:100%;background:var(--bg);overflow:hidden;
     while (zEls.length < zs.length) { var d = document.createElement('div'); d.className = 'z';
       d.appendChild(document.createElement('span')); zl.appendChild(d); zEls.push(d); }
     while (zEls.length > zs.length) { zl.removeChild(zEls.pop()); }
+    var STY = {
+      fvg_up: ['33,150,243', 0.20, 'FVG ▲'], fvg_dn: ['233,30,99', 0.20, 'FVG ▼'],
+      ob_up: ['139,195,74', 0.28, 'OB ▲'], ob_dn: ['255,87,34', 0.28, 'OB ▼'],
+      pd_prem: ['239,83,80', 0.06, 'PREMIUM'], pd_disc: ['38,166,154', 0.06, 'DISCOUNT']
+    };
     zs.forEach(function (z, i) {
-      var e = zEls[i], rgb, a, txt, dash = false;
+      var e = zEls[i], rgb, a, txt, dash = false, pos = '6px';
       if (z.side === 'buy' || z.side === 'sell') {            // RS = सपोर्ट / रेज़िस्टेंस (ऑर्डर बुक की दीवार)
         rgb = z.side === 'buy' ? '0,200,120' : '240,70,70';
         a = Math.min(0.12 + 0.04 * z.strength, 0.4);
         txt = 'RS ' + z.strength.toFixed(1) + 'x';
+      } else if (STY[z.side]) {                                // SMC: FVG / OB / प्रीमियम-डिस्काउंट
+        rgb = STY[z.side][0]; a = STY[z.side][1]; txt = STY[z.side][2];
+        dash = z.side.indexOf('pd_') === 0;
       } else {                                                 // LQ = अनुमानित लिक्विडेशन
         var isLong = z.side === 'liq_long';
         rgb = isLong ? '255,167,38' : '206,147,216';
-        a = Math.min(0.10 + 0.05 * z.strength, 0.4); dash = true;
+        a = Math.min(0.10 + 0.05 * z.strength, 0.4); dash = true; pos = '38%';
         txt = 'LQ ' + (isLong ? 'लॉन्ग' : 'शॉर्ट') + ' ' + z.strength.toFixed(1) + 'x';
       }
       e.style.background = 'rgba(' + rgb + ',' + a + ')';
       e.style.borderTop = e.style.borderBottom = '1px ' + (dash ? 'dashed' : 'solid') + ' rgba(' + rgb + ',.8)';
       e.firstChild.textContent = txt;
-      e.firstChild.style.left = dash ? '38%' : '6px';
+      e.firstChild.style.left = pos;
     });
   }
   // पेंडिंग ऑर्डर के बार (दाईं किनारी से बाईं ओर), चार्ट के पीछे
   var dpc = document.createElement('canvas'); dpc.id = 'dp'; zl.appendChild(dpc);
   var dctx = dpc.getContext('2d');
+  var SM = null;
   function drawDepth(w) {
     var dpr = window.devicePixelRatio || 1, cw = zl.clientWidth, ch = zl.clientHeight;
     if (dpc.width !== Math.round(cw * dpr) || dpc.height !== Math.round(ch * dpr)) {
@@ -483,16 +623,49 @@ html,body{margin:0;height:100%;background:var(--bg);overflow:hidden;
       dpc.style.width = cw + 'px'; dpc.style.height = ch + 'px';
     }
     dctx.setTransform(dpr, 0, 0, dpr, 0, 0); dctx.clearRect(0, 0, cw, ch);
-    if (!DEP || !DEP.rows || !DEP.rows.length) return;
-    var mx = 0; DEP.rows.forEach(function (r) { if (r[1] > mx) mx = r[1]; });
-    var maxW = w * 0.28, half = DEP.step / 2;
-    DEP.rows.forEach(function (r) {
-      var y1 = series.priceToCoordinate(r[0] + half), y2 = series.priceToCoordinate(r[0] - half);
-      if (y1 === null || y2 === null) return;
-      var bw = Math.max(2, Math.sqrt(r[1] / mx) * maxW);
-      dctx.fillStyle = r[2] === 0 ? 'rgba(38,166,154,.5)' : 'rgba(239,83,80,.5)';
-      dctx.fillRect(w - bw, Math.min(y1, y2), bw, Math.max(1, Math.abs(y2 - y1) - 0.5));
+    if (DEP && DEP.rows && DEP.rows.length) {
+      var mx = 0; DEP.rows.forEach(function (r) { if (r[1] > mx) mx = r[1]; });
+      var maxW = w * 0.28, half = DEP.step / 2;
+      DEP.rows.forEach(function (r) {
+        var y1 = series.priceToCoordinate(r[0] + half), y2 = series.priceToCoordinate(r[0] - half);
+        if (y1 === null || y2 === null) return;
+        var bw = Math.max(2, Math.sqrt(r[1] / mx) * maxW);
+        dctx.fillStyle = r[2] === 0 ? 'rgba(38,166,154,.5)' : 'rgba(239,83,80,.5)';
+        dctx.fillRect(w - bw, Math.min(y1, y2), bw, Math.max(1, Math.abs(y2 - y1) - 0.5));
+      });
+    }
+    if (SM) drawSmc(w);
+  }
+  // SMC की लाइनें: BOS/CHoCH, लिक्विडिटी स्वीप, EQ (50%)
+  function drawSmc(w) {
+    var tsc = chart.timeScale();
+    function X(t) { return tsc.timeToCoordinate(t + OFF); }
+    dctx.font = 'bold 11px sans-serif'; dctx.textAlign = 'center';
+    (SM.events || []).forEach(function (e) {
+      var x1 = X(e.t0), x2 = X(e.t1), y = series.priceToCoordinate(e.level);
+      if (x1 === null || x2 === null || y === null) return;
+      var col = e.dir === 'up' ? '#26a69a' : '#ef5350';
+      dctx.strokeStyle = col; dctx.fillStyle = col; dctx.lineWidth = e.type === 'CHoCH' ? 1.8 : 1;
+      dctx.setLineDash([5, 4]); dctx.beginPath(); dctx.moveTo(x1, y); dctx.lineTo(x2, y); dctx.stroke();
+      dctx.fillText(e.type, (x1 + x2) / 2, e.dir === 'up' ? y - 4 : y + 13);
     });
+    (SM.sweeps || []).forEach(function (s) {
+      var x1 = X(s.t0), x2 = X(s.t1), y = series.priceToCoordinate(s.level);
+      if (x1 === null || x2 === null || y === null) return;
+      dctx.strokeStyle = dctx.fillStyle = '#ffa726'; dctx.lineWidth = 1;
+      dctx.setLineDash([2, 3]); dctx.beginPath(); dctx.moveTo(x1, y); dctx.lineTo(x2, y); dctx.stroke();
+      dctx.fillText('Sweep', x2, s.dir === 'bsl' ? y - 4 : y + 13);
+    });
+    if (SM.pd) {
+      var ye = series.priceToCoordinate(SM.pd.eq), x0 = X(SM.pd.t0);
+      if (ye !== null) {
+        x0 = x0 === null ? 0 : Math.max(0, x0);
+        dctx.strokeStyle = dctx.fillStyle = LIGHT ? '#6a6d78' : '#9598a1'; dctx.lineWidth = 1;
+        dctx.setLineDash([1, 4]); dctx.beginPath(); dctx.moveTo(x0, ye); dctx.lineTo(w, ye); dctx.stroke();
+        dctx.textAlign = 'left'; dctx.fillText('EQ 50%', x0 + 6, ye - 4); dctx.textAlign = 'center';
+      }
+    }
+    dctx.setLineDash([]);
   }
   function frame() {
     var w = chart.timeScale().width();
@@ -501,8 +674,10 @@ html,body{margin:0;height:100%;background:var(--bg);overflow:hidden;
       var e = zEls[i]; if (!e) continue;
       var y1 = series.priceToCoordinate(Z[i].high), y2 = series.priceToCoordinate(Z[i].low);
       if (y1 === null || y2 === null) { e.style.display = 'none'; continue; }
-      e.style.display = 'block'; e.style.top = Math.min(y1, y2) + 'px';
-      e.style.height = Math.max(Math.abs(y2 - y1), 2) + 'px'; e.style.width = w + 'px';
+      var left = 0;
+      if (Z[i].t0) { var xc = chart.timeScale().timeToCoordinate(Z[i].t0 + OFF); left = xc === null ? 0 : Math.max(0, xc); }
+      e.style.display = 'block'; e.style.top = Math.min(y1, y2) + 'px'; e.style.left = left + 'px';
+      e.style.height = Math.max(Math.abs(y2 - y1), 2) + 'px'; e.style.width = Math.max(0, w - left) + 'px';
     }
     requestAnimationFrame(frame);
   }
@@ -521,7 +696,7 @@ html,body{margin:0;height:100%;background:var(--bg);overflow:hidden;
 
   // ---- BUY/SELL मार्कर ----
   var bars = [], markSig = '';
-  function setMarks(ms) {
+  function setMarks(ms, sw) {
     var out = [];
     ms.forEach(function (m) {
       var t = m.time + OFF, bt = null;
@@ -530,6 +705,11 @@ html,body{margin:0;height:100%;background:var(--bg);overflow:hidden;
       var buy = m.type === 'BUY';
       out.push({ time: bt, position: buy ? 'belowBar' : 'aboveBar', color: buy ? '#00e676' : '#ff1744',
                  shape: buy ? 'arrowUp' : 'arrowDown', text: m.type });
+    });
+    (sw || []).forEach(function (q) {                  // HH / HL / LH / LL
+      var up = q.k === 'H', good = (q.l === 'HH' || q.l === 'HL');
+      out.push({ time: q.t + OFF, position: up ? 'aboveBar' : 'belowBar', color: good ? '#26a69a' : '#ef5350',
+                 shape: 'circle', size: 0.5, text: q.l });
     });
     out.sort(function (a, b) { return a.time - b.time; });
     var sg = JSON.stringify(out); if (sg === markSig) return; markSig = sg;
@@ -558,8 +738,8 @@ html,body{margin:0;height:100%;background:var(--bg);overflow:hidden;
     cur.lastT = data[data.length - 1].time;
     lastBar = data[data.length - 1];
     if (!hovering) showLegend(lastBar);
-    DEP = d.depth || null;
-    setZones(d.zones || []); setLines(d.sig); setMarks(d.marks || []);
+    DEP = d.depth || null; SM = d.smc || null;
+    setZones(d.zones || []); setLines(d.sig); setMarks(d.marks || [], SM ? SM.swings : []);
   }
   document.getElementById('rs').addEventListener('click', function () { yZoom = 1; refreshScale(); showDefault(); });
 
@@ -589,7 +769,7 @@ c1, c2 = st.columns(2)
 symbol = c1.selectbox("कॉइन", COINS, label_visibility="collapsed")
 tf = c2.selectbox("टाइमफ्रेम", list(TF), index=1, label_visibility="collapsed")
 
-MODES = ["🎯 फ़ोकस", "⛶ फुल", "〰️ स्मूथ", "💥 LQ", "📶 ऑर्डर बार", "☀️ लाइट"]
+MODES = ["🎯 फ़ोकस", "⛶ फुल", "〰️ स्मूथ", "💥 LQ", "📶 ऑर्डर बार", "☀️ लाइट", "🧠 SMC"]
 if hasattr(st, "pills"):
     picked = st.pills("मोड", MODES, selection_mode="multi", default=MODES[3:5], label_visibility="collapsed")
 else:
@@ -601,6 +781,7 @@ smooth = MODES[2] in picked
 show_liq = MODES[3] in picked          # अनुमानित लिक्विडेशन ज़ोन
 show_depth = MODES[4] in picked        # पेंडिंग BUY/SELL ऑर्डर के बार
 light = MODES[5] in picked             # लाइट मोड
+smc_on = MODES[6] in picked            # SMC: BOS/CHoCH, OB, FVG, स्वीप, प्रीमियम/डिस्काउंट
 
 # लाइट मोड: पेज डार्क हो तो रंग उलट देते हैं (चार्ट अपनी लाइट थीम ख़ुद बनाता है, उसे दोबारा उलटकर सीधा रखते हैं)
 components.html(
@@ -678,6 +859,8 @@ with st.expander("⚙️ सेटिंग (ज़ोन, सिग्नल, �
     st.subheader("लिक्विडिटी / फंडिंग")
     trade_usd = st.number_input("मेरी पोज़ीशन का साइज़ (USD, लीवरेज के बाद)", 10.0, 1_000_000.0, 500.0, step=100.0)
     funding_thr = st.slider("फंडिंग चेतावनी (± %)", 0.01, 0.30, 0.05, 0.01)
+    st.subheader("SMC")
+    smc_n = st.slider("स्विंग संवेदनशीलता (कैंडल; बड़ा = कम पर पक्के स्विंग)", 2, 8, 3)
 
 if not focus:
     st.title(f"📊 {symbol} ऑर्डर बुक ज़ोन")
@@ -798,6 +981,20 @@ def live_feed():
              "strength": l["strength"]}
             for l in liq_levels(df, mid)
         ]
+    smc, smc_zones = None, []
+    if smc_on:
+        smc = smc_analyze(df, smc_n)
+        if smc:
+            for f in smc["fvg"]:
+                smc_zones.append({"side": "fvg_up" if f["dir"] == "up" else "fvg_dn", "low": f["low"],
+                                  "high": f["high"], "strength": 0, "t0": f["t0"]})
+            for o in smc["ob"]:
+                smc_zones.append({"side": "ob_up" if o["dir"] == "up" else "ob_dn", "low": o["low"],
+                                  "high": o["high"], "strength": 0, "t0": o["t0"]})
+            if smc["pd"]:
+                q = smc["pd"]
+                smc_zones.append({"side": "pd_prem", "low": q["eq"], "high": q["hi"], "strength": 0, "t0": q["t0"]})
+                smc_zones.append({"side": "pd_disc", "low": q["lo"], "high": q["eq"], "strength": 0, "t0": q["t0"]})
     payload = {
         "key": f"{symbol}|{tf}",
         "label": f"{symbol} · {tf}",
@@ -807,7 +1004,8 @@ def live_feed():
             for t, o, h, l, c in zip(df["time"], df["open"], df["high"], df["low"], df["close"])
         ],
         "zones": [{"side": z["side"], "low": z["low"], "high": z["high"], "strength": z["strength"]}
-                  for z in st_["zones"]] + lq_zones,
+                  for z in st_["zones"]] + lq_zones + smc_zones,
+        "smc": ({k: smc[k] for k in ("swings", "events", "sweeps", "pd", "bias")} if smc else None),
         "depth": st_["depth"] if show_depth else None,
         "sig": {k: sig.get(k) for k in ("type", "entry", "sl", "tp")},
         "marks": [{"time": int(m["time"].timestamp()), "type": m["type"]}
