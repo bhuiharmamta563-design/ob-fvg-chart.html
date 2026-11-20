@@ -1118,10 +1118,7 @@ def live_feed():
                                   "high": max(setup["entry"], setup["tp1"]), "strength": 0, "t0": t8})
                 smc_zones.append({"side": "rr_sl", "low": min(setup["entry"], setup["sl"]),
                                   "high": max(setup["entry"], setup["sl"]), "strength": 0, "t0": t8})
-            if smc["pd"]:
-                q = smc["pd"]
-                smc_zones.append({"side": "pd_prem", "low": q["eq"], "high": q["hi"], "strength": 0, "t0": q["t0"]})
-                smc_zones.append({"side": "pd_disc", "low": q["lo"], "high": q["eq"], "strength": 0, "t0": q["t0"]})
+            # प्रीमियम/डिस्काउंट का रंग नहीं भरते; सिर्फ़ EQ 50% की लाइन चार्ट पर दिखती है
     payload = {
         "key": f"{symbol}|{tf}",
         "label": f"{symbol} · {tf}",
@@ -1131,10 +1128,10 @@ def live_feed():
             for t, o, h, l, c in zip(df["time"], df["open"], df["high"], df["low"], df["close"])
         ],
         "zones": [{"side": z["side"], "low": z["low"], "high": z["high"], "strength": z["strength"]}
-                  for z in st_["zones"]] + lq_zones + smc_zones,
+                  for z in ([] if smc_on else st_["zones"])] + lq_zones + smc_zones,
         "smc": ({k: smc[k] for k in ("swings", "events", "sweeps", "pd", "bias")} if smc else None),
         "setup": setup,
-        "depth": st_["depth"] if show_depth else None,
+        "depth": st_["depth"] if (show_depth and not smc_on) else None,
         "sig": {k: sig.get(k) for k in ("type", "entry", "sl", "tp")},
         "marks": [{"time": int(m["time"].timestamp()), "type": m["type"]}
                   for m in st.session_state["marks"] if m["symbol"] == symbol],
