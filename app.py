@@ -448,7 +448,59 @@ def smc_analyze(df, n=3):
                "t0": ts[min(h_["i"], l_["i"])]}
 
     return {"swings": labels[-10:], "events": events[-6:], "sweeps": sweeps[-4:],
-            "pd": pd_, "bias": trend, "fvg": fvg, "ob": ob_out}
+            "pd": pd_, "bias": trend, "fvg": fvg, "ob": ob_out,
+            "hs": [p["p"] for p in Hs][-6:], "ls": [p["p"] for p in Ls][-6:]}
+
+
+@st.cache_data(ttl=1)
+def smc_cached(symbol, res, n_candles, n):
+    df = get_candles(symbol, res, n_candles)
+    if df.empty:
+        return None
+    return smc_analyze(df.drop_duplicates("time"), n)
+
+
+def smc_setup(smc, price):
+    """SMC के आधार पर एंट्री / SL / TP: बायस की दिशा में, सबसे पास के अनमिटिगेटेड OB या FVG से"""
+    if not smc or not smc.get("bias") or not price:
+        return None
+    long_ = smc["bias"] > 0
+    want = "up" if long_ else "down"
+    zones = [dict(z, kind="OB") for z in smc["ob"] if z["dir"] == want] + \
+            [dict(z, kind="FVG") for z in smc["fvg"] if z["dir"] == want]
+    cand = []
+    for z in zones:
+        if long_:
+            if price < z["low"]:
+                continue                     # भाव ज़ोन के नीचे चला गया: सेटअप ख़त्म
+            dist = max(0.0, price - z["high"])
+        else:
+            if price > z["high"]:
+                continue
+            dist = max(0.0, z["low"] - price)
+        cand.append((dist, 0 if z["kind"] == "OB" else 1, z))
+    if not cand:
+        return None
+    z = min(cand, key=lambda c: (c[0], c[1]))[2]
+    in_zone = z["low"] <= price <= z["high"]
+    entry = price if in_zone else (z["low"] + z["high"]) / 2
+    buf = price * 0.001
+    sl = z["low"] - buf if long_ else z["high"] + buf
+    risk = abs(entry - sl)
+    if risk < price * 0.0015:             # बहुत छोटा ज़ोन: SL को कम से कम 0.15% दूर रखो
+        risk = price * 0.0015
+        sl = entry - risk if long_ else entry + risk
+    if long_:
+        targets = sorted(h for h in smc.get("hs", []) if h >= entry + risk)
+    else:
+        targets = sorted((l for l in smc.get("ls", []) if l <= entry - risk), reverse=True)
+    sign = 1 if long_ else -1
+    tp1 = targets[0] if targets else entry + sign * 1.5 * risk
+    tp2 = targets[1] if len(targets) > 1 else entry + sign * max(3 * risk, abs(tp1 - entry) * 1.5)
+    return {"dir": "long" if long_ else "short", "kind": z["kind"],
+            "entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2,
+            "rr": abs(tp1 - entry) / risk, "in_zone": in_zone,
+            "zlow": z["low"], "zhigh": z["high"]}
 
 
 def check_breaks(price, prev_price, prev_zones):
@@ -607,7 +659,8 @@ html,body{margin:0;height:100%;background:var(--bg);overflow:hidden;
     var STY = {
       fvg_up: ['33,150,243', 0.20, 'FVG ▲'], fvg_dn: ['233,30,99', 0.20, 'FVG ▼'],
       ob_up: ['139,195,74', 0.28, 'OB ▲'], ob_dn: ['255,87,34', 0.28, 'OB ▼'],
-      pd_prem: ['239,83,80', 0.06, 'PREMIUM'], pd_disc: ['38,166,154', 0.06, 'DISCOUNT']
+      pd_prem: ['239,83,80', 0.06, 'PREMIUM'], pd_disc: ['38,166,154', 0.06, 'DISCOUNT'],
+      rr_tp: ['0,200,120', 0.16, 'लाभ ज़ोन'], rr_sl: ['255,23,68', 0.16, 'रिस्क ज़ोन']
     };
     zs.forEach(function (z, i) {
       var e = zEls[i], rgb, a, txt, dash = false, pos = '6px';
@@ -712,6 +765,19 @@ html,body{margin:0;height:100%;background:var(--bg);overflow:hidden;
     });
   }
 
+  // ---- SMC एंट्री / SL / TP1 / TP2 लाइनें ----
+  var sLines = [];
+  function setSmcLines(s) {
+    if (!s) { sLines.forEach(function (l) { series.removePriceLine(l); }); sLines = []; return; }
+    var spec = [['SMC एंट्री', s.entry, '#42a5f5', 0], ['SMC SL', s.sl, '#ff1744', 0],
+                ['TP1', s.tp1, '#00e676', 2], ['TP2', s.tp2, '#69f0ae', 2]];
+    if (sLines.length === 4) { spec.forEach(function (a, i) { sLines[i].applyOptions({ price: a[1] }); }); return; }
+    spec.forEach(function (a) {
+      sLines.push(series.createPriceLine({ price: a[1], color: a[2], lineWidth: 2, lineStyle: a[3],
+        axisLabelVisible: true, title: a[0] }));
+    });
+  }
+
   // ---- BUY/SELL मार्कर ----
   var bars = [], markSig = '';
   function setMarks(ms, sw) {
@@ -757,7 +823,7 @@ html,body{margin:0;height:100%;background:var(--bg);overflow:hidden;
     lastBar = data[data.length - 1];
     if (!hovering) showLegend(lastBar);
     DEP = d.depth || null; SM = d.smc || null;
-    setZones(d.zones || []); setLines(d.sig); setMarks(d.marks || [], SM ? SM.swings : []);
+    setZones(d.zones || []); setLines(d.sig); setSmcLines(d.setup || null); setMarks(d.marks || [], SM ? SM.swings : []);
   }
   document.getElementById('rs').addEventListener('click', function () { yZoom = 1; refreshScale(); showDefault(); });
 
@@ -968,6 +1034,28 @@ def live_top():
     else:
         why = f"  |  {sig['why']}" if sig.get("why") else ""
         st.info(f"⚪ अभी रुकें (WAIT)  |  {price}{why}")
+    # 🧠 SMC सेटअप: एंट्री / SL / TP / बाहर निकलने की शर्त
+    if smc_on:
+        try:
+            sm = smc_cached(symbol, tf, n_candles, smc_n)
+        except Exception:
+            sm = None
+        su = smc_setup(sm, mid)
+        if su:
+            buy = su["dir"] == "long"
+            agree = " · ऑर्डर-बुक सिग्नल भी सहमत ✔" if sig["type"] == ("BUY" if buy else "SELL") else ""
+            levels = (f"SL {fmt(su['sl'])}  |  TP1 {fmt(su['tp1'])}  |  TP2 {fmt(su['tp2'])}  |  RR {su['rr']:.1f}")
+            exit_rule = "बाहर: SL टूटे, या उलटा CHoCH आए, या TP पर निकलें"
+            if su["in_zone"]:
+                (st.success if buy else st.error)(
+                    f"🧠 SMC {'LONG' if buy else 'SHORT'} (अभी {su['kind']} ज़ोन में)  |  एंट्री {fmt(su['entry'])}  |  {levels}{agree}\n\n{exit_rule}")
+            else:
+                st.info(
+                    f"🧠 SMC {'LONG' if buy else 'SHORT'} सेटअप: भाव {su['kind']} ज़ोन "
+                    f"({fmt(su['zlow'])}–{fmt(su['zhigh'])}) में आए तब एंट्री {fmt(su['entry'])}  |  {levels}\n\n{exit_rule}")
+        elif sm:
+            st.caption("🧠 SMC: अभी बायस की दिशा में कोई साफ़ OB/FVG सेटअप नहीं।")
+
     # चेतावनियाँ: पतली बुक और फंडिंग की भीड़ (फ़ोकस मोड में भी दिखती हैं)
     liq = st_["liq"]
     if liq["level"] == 2:
@@ -1006,9 +1094,9 @@ def live_feed():
              "strength": l["strength"]}
             for l in liq_levels(df, mid)
         ]
-    smc, smc_zones = None, []
+    smc, smc_zones, setup = None, [], None
     if smc_on:
-        smc = smc_analyze(df, smc_n)
+        smc = smc_cached(symbol, tf, n_candles, smc_n)
         if smc:
             for f in smc["fvg"]:
                 smc_zones.append({"side": "fvg_up" if f["dir"] == "up" else "fvg_dn", "low": f["low"],
@@ -1016,6 +1104,13 @@ def live_feed():
             for o in smc["ob"]:
                 smc_zones.append({"side": "ob_up" if o["dir"] == "up" else "ob_dn", "low": o["low"],
                                   "high": o["high"], "strength": 0, "t0": o["t0"]})
+            setup = smc_setup(smc, mid)
+            if setup:
+                t8 = int(df["time"].iloc[max(0, len(df) - 8)].timestamp())
+                smc_zones.append({"side": "rr_tp", "low": min(setup["entry"], setup["tp1"]),
+                                  "high": max(setup["entry"], setup["tp1"]), "strength": 0, "t0": t8})
+                smc_zones.append({"side": "rr_sl", "low": min(setup["entry"], setup["sl"]),
+                                  "high": max(setup["entry"], setup["sl"]), "strength": 0, "t0": t8})
             if smc["pd"]:
                 q = smc["pd"]
                 smc_zones.append({"side": "pd_prem", "low": q["eq"], "high": q["hi"], "strength": 0, "t0": q["t0"]})
@@ -1031,6 +1126,7 @@ def live_feed():
         "zones": [{"side": z["side"], "low": z["low"], "high": z["high"], "strength": z["strength"]}
                   for z in st_["zones"]] + lq_zones + smc_zones,
         "smc": ({k: smc[k] for k in ("swings", "events", "sweeps", "pd", "bias")} if smc else None),
+        "setup": setup,
         "depth": st_["depth"] if show_depth else None,
         "sig": {k: sig.get(k) for k in ("type", "entry", "sl", "tp")},
         "marks": [{"time": int(m["time"].timestamp()), "type": m["type"]}
