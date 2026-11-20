@@ -11,7 +11,8 @@ import streamlit.components.v1 as components
 # Delta Exchange India: ऑर्डर बुक ज़ोन + सिग्नल + चार्ट
 # ------------------------------------------------------------------
 BASE = "https://api.india.delta.exchange"
-COINS = ["UNIUSD", "AVAXUSD", "BTCUSD"]
+# पहले दिखने वाले पसंदीदा कॉइन (बाकी सब Delta से अपने-आप आ जाते हैं)
+FAVS = ["UNIUSD", "XRPUSD", "AVAXUSD", "EVAAUSD", "BTCUSD", "ETHUSD", "SOLUSD"]
 TF = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600}
 
 st.set_page_config(
@@ -27,6 +28,23 @@ def fmt(x):
 
 # ---------------------------- डेटा --------------------------------
 @st.cache_data(ttl=1)   # 1 सेकंड रिफ्रेश के लिए कैश भी 1 सेकंड
+@st.cache_data(ttl=3600)
+def get_symbols():
+    """Delta India पर चालू सभी perpetual कॉइन की सूची"""
+    try:
+        r = requests.get(f"{BASE}/v2/products", timeout=15)
+        r.raise_for_status()
+        live = sorted(
+            p["symbol"]
+            for p in r.json().get("result", [])
+            if p.get("contract_type") == "perpetual_futures" and p.get("state", "live") == "live"
+        )
+    except Exception:
+        live = []
+    favs = [f for f in FAVS if f in live] or FAVS
+    return favs + [x for x in live if x not in favs]
+
+
 def get_candles(symbol, res, n):
     end = int(time.time())
     start = end - TF[res] * n
@@ -765,8 +783,15 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+ALL = get_symbols()
+q = st.text_input("कॉइन खोजें", placeholder="🔍 कॉइन लिखकर खोजें (जैसे xrp, avax, eva)",
+                  label_visibility="collapsed").strip().upper().replace(" ", "")
+matches = [x for x in ALL if q in x] if q else ALL
+if q and not matches:
+    st.caption(f"'{q}' नाम का कोई चालू कॉइन नहीं मिला — पूरी सूची दिख रही है।")
+    matches = ALL
 c1, c2 = st.columns(2)
-symbol = c1.selectbox("कॉइन", COINS, label_visibility="collapsed")
+symbol = c1.selectbox("कॉइन", matches, label_visibility="collapsed")
 tf = c2.selectbox("टाइमफ्रेम", list(TF), index=1, label_visibility="collapsed")
 
 MODES = ["🎯 फ़ोकस", "⛶ फुल", "〰️ स्मूथ", "💥 LQ", "📶 ऑर्डर बार", "☀️ लाइट", "🧠 SMC"]
